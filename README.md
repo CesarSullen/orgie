@@ -1,38 +1,34 @@
 # orgie
 
-Gestor de organizaciones de archivos en Bash. Un solo comando con varios **modos**, que se eligen con una flag:
+Un solo script de Bash para tres cosas que hago a mano todo el tiempo: ordenar descargas de juegos de Switch, numerar capítulos de series y bajar subtítulos. Se elige qué hacer con una flag.
 
-| Modo | Flag | Para qué sirve |
-|---|---|---|
-| Juegos | `-g`, `--games` | Descomprime y organiza juegos de Nintendo Switch (`.rar`/`.zip`) en una carpeta por juego |
-| Series | `-s`, `--series` | Numera videos (`01`, `02`... o `001`, `002`...) según su fecha de creación en el disco |
-| Subtítulos | `-t`, `--subs` | Descarga subtítulos (por defecto en español) y los nombra igual que el video, sin cuentas |
+```bash
+orgie -g carpeta     # juegos de Switch
+orgie -s carpeta     # numerar capítulos
+orgie -t carpeta     # subtítulos
+```
 
-Se pueden añadir más modos en el futuro sin cambiar la forma de usarlo.
-
-Además: `--install` y `--uninstall` para instalar/quitar el comando (ver [Instalación](#instalación)).
+Si no pones carpeta usa la actual. Si no pones ninguna flag, muestra la ayuda y no toca nada.
 
 ## Instalación
 
-Instala `orgie` como comando propio de tu usuario (se copia a `~/.local/bin/orgie`). No usa `sudo` y no modifica ningún archivo de configuración de tu terminal.
+Se instala solo para tu usuario, en `~/.local/bin/orgie`. No usa `sudo` ni toca la configuración de tu terminal.
 
-### Instalar (descarga + instala en un paso)
-
-Copia y pega este bloque en la terminal:
+Descarga e instala de una vez:
 
 ```bash
 f=$(mktemp) && curl -fsSL -o "$f" https://raw.githubusercontent.com/CesarSullen/orgie/main/orgie.sh && bash "$f" --install; rm -f "$f"
 ```
 
-Qué hace: descarga `orgie.sh` a un archivo temporal, ejecuta su instalador (`--install`) y borra el temporal. Si prefieres leer el script antes de ejecutarlo (buena costumbre), usa la versión en pasos:
+Si prefieres leerlo antes de ejecutarlo (no está de más):
 
 ```bash
 curl -fsSL -o orgie.sh https://raw.githubusercontent.com/CesarSullen/orgie/main/orgie.sh
-less orgie.sh              # léelo; sal con la tecla q
+less orgie.sh
 bash orgie.sh --install
 ```
 
-También puedes clonar el repositorio:
+O clonando el repo:
 
 ```bash
 git clone https://github.com/CesarSullen/orgie.git
@@ -40,202 +36,136 @@ cd orgie
 bash orgie.sh --install
 ```
 
-Al terminar, el instalador te dice si `~/.local/bin` ya está en tu `PATH`. Si no lo está, te indica la línea a añadir a `~/.bashrc` (o `~/.zshrc`) y debes abrir una terminal nueva. Comprueba que funciona con:
+Al terminar te dice si `~/.local/bin` está en tu `PATH`. Si no, te da la línea que tienes que añadir a `~/.bashrc` (o `~/.zshrc`) y luego abres una terminal nueva. Para comprobarlo:
 
 ```bash
 orgie --help
 ```
 
-### Actualizar
+Para actualizar, vuelve a correr el comando de instalación; si la versión cambió, pregunta antes de reemplazar.
 
-Vuelve a ejecutar el bloque de instalación. Si la versión instalada es distinta, pregunta antes de reemplazarla.
-
-### Desinstalar
+Para desinstalar:
 
 ```bash
 orgie --uninstall
 ```
 
-Pide confirmación y solo borra `~/.local/bin/orgie` (y únicamente si ese archivo es realmente orgie). No toca tus videos, tus juegos ni ningún otro archivo. Si prefieres hacerlo a mano: `rm ~/.local/bin/orgie`.
+Te enseña qué va a quitar (el script, tu sesión de OpenSubtitles si la guardaste y la caché) y pide confirmación. No toca tus videos ni tus juegos.
 
-### Uso sin instalar
+Sin instalar también funciona: `bash orgie.sh -s .`
 
-```bash
-bash orgie.sh -s .
-```
-
-## Uso
+## Ejemplos rápidos
 
 ```bash
-orgie <modo> [opciones] [carpeta]
-orgie --help
-orgie --version
-```
-
-Si no se indica carpeta, usa el directorio actual (`.`). Hay que elegir **un** modo.
-
-Si lo ejecutas sin modo (`orgie .` o solo `orgie`), no hace nada: muestra un error y la misma ayuda que `--help`, y termina.
-
-### Ejemplos rápidos
-
-```bash
-orgie -g .                      # juegos: organiza los .rar/.zip de la carpeta actual
-orgie -g ~/Downloads/Games      # juegos: en otra carpeta, sin entrar en ella
-orgie -s .                      # series: numera los videos de la carpeta actual
-orgie -s ~/Series/Temp1         # series: en otra carpeta
-orgie -s -n 36 .                # series: empieza en 036 en vez de 01
+orgie -g .                     # juegos: organiza los .rar/.zip de la carpeta actual
+orgie -g ~/Downloads/Games     # juegos: en otra carpeta
+orgie -s .                     # series: numera los videos de la carpeta actual
+orgie -s -n 36 .               # series: empieza en 036
 orgie -t .                     # subtítulos: para los videos de la carpeta actual
-orgie -t ~/Peliculas/Mi.mkv     # subtítulos: para una película
-orgie -t ~/Peliculas            # subtítulos: para todos los videos de la carpeta
-orgie -t -l en .                # subtítulos: en inglés en vez de español
-bash orgie.sh --install          # instalar el comando (desde el orgie.sh descargado)
-orgie --uninstall               # quitar el comando instalado
-orgie --help                    # ver la ayuda
+orgie -t ~/Peliculas/Mi.mkv    # subtítulos: para una sola película
+orgie -t -l en .               # subtítulos: en inglés
+orgie -v                       # versión
 ```
 
-## Modo `--games`
+## Juegos (`-g`)
 
-Pensado para descargas de juegos de Switch en formato `.rar` o `.zip` (base + update/DLC).
+Pensado para juegos de Switch en `.rar` o `.zip` (base más update o DLC). Para cada archivo saca el nombre del juego, lo descomprime en su carpeta, y si el juego ya tiene carpeta mete ahí el update. Si la extracción deja una sola subcarpeta, sube el contenido un nivel. Al final genera un `README.md` con lo que pesa cada juego, de mayor a menor, y pregunta si quieres borrar los archivos que se extrajeron bien. Los que fallan se quedan como estaban.
 
-1. Busca todos los `.rar` y `.zip` de la carpeta.
-2. A partir del nombre de archivo, deduce el nombre del juego y descarta la parte de "Switch NSP Base Game" / "Switch NSP Update X.Y.Z" / etc.
-3. Descomprime cada archivo dentro de `NombreDelJuego/` (si el juego ya tiene carpeta, añade ahí el update o DLC, aunque cambie la capitalización).
-4. Si la extracción deja una única subcarpeta anidada, mueve su contenido un nivel arriba.
-5. Si un archivo falla (corrupto, formato no reconocido...), lo deja intacto, avisa y sigue con el resto.
-6. Genera `README.md` en esa carpeta con el tamaño de cada juego (de mayor a menor) y un total.
-7. Muestra un resumen y pregunta si quieres borrar los archivos ya extraídos **con éxito** (los que fallaron nunca se tocan).
-
-Ejemplo:
+El nombre del juego sale de lo que va antes de la palabra "Switch" en el archivo, con los guiones convertidos en espacios:
 
 ```
-$ ls
-'Kingdom Rush Frontiers Switch NSP BASE GAME.rar'
-'Kingdom Rush Frontiers Switch NSP Update 3.2.23.rar'
-'Pokemon-HOME-Switch-NSP-Base-Game.rar'
-'Pokemon-HOME-Switch-NSP-Update-1.2.1.rar'
-
-$ orgie -g .      # y confirmar el borrado
-$ ls
-'Kingdom Rush Frontiers'/
-'Pokemon HOME'/
-README.md
+Kingdom Rush Frontiers Switch NSP BASE GAME.rar   ->  Kingdom Rush Frontiers/
+Pokemon-HOME-Switch-NSP-Update-1.2.1.rar          ->  Pokemon HOME/
 ```
 
-Convención de nombres que espera (con espacios o guiones, da igual):
+Si un archivo no tiene la palabra "Switch", lo avisa y no lo toca. Hace falta `unrar`, `unzip` o `7z`:
 
+```bash
+sudo apt install unrar         # .rar
+sudo apt install unzip         # .zip
+sudo apt install p7zip-full    # ambos
 ```
-NombreDelJuego Switch NSP Base Game.rar
-NombreDelJuego Switch NSP Update 1.2.3.zip
-```
 
-Todo lo que va **después** de la palabra "Switch" se descarta, y los guiones se convierten en espacios. Si un archivo no contiene la palabra "Switch", se avisa y se deja intacto.
+## Series (`-s`)
 
-## Modo `--series`
+Ordena los videos de una carpeta por su fecha de creación en el disco y los renombra `01.mp4`, `02.mp4`... o `001.mp4`, `002.mp4`... según cuántos sean (si el último número pasa de 99, usa tres cifras). Conserva la extensión y deja los demás archivos como están.
 
-Pensado para capítulos descargados (por ejemplo desde Telegram).
+Antes de renombrar enseña los primeros y los últimos y pregunta. **No se puede deshacer**, así que mira esa vista previa.
 
-1. Busca los videos de la carpeta (`mp4`, `mkv`, `avi`, `mov`, `webm`, `m4v`, `ts`, `flv`, `wmv`; los demás archivos no se tocan).
-2. Lee la fecha de creación de cada uno (precisión de nanosegundos) y los ordena del más antiguo al más reciente.
-3. Calcula cuántas cifras usar: si el último número tiene 1 o 2 cifras usa 2 (`05`); si tiene 3, usa 3 (`005`); y así sucesivamente.
-4. Muestra una **vista previa** y pide confirmación (`s`/`n`). Hasta ese momento no cambia nada.
-5. Renombra en dos fases (primero a nombres temporales) para que ningún archivo pise a otro.
+La fecha de creación es el momento en que el archivo apareció en tu disco, o sea cuando empezó a descargarse, y no cambia después. Si descargas desde Telegram, dale a descargar en el orden correcto y el resultado respeta ese orden aunque las descargas terminen desordenadas. La fecha de modificación no sirve para esto porque cambia cuando termina cada descarga.
 
-El renombrado **no se puede deshacer**: revisa la vista previa antes de confirmar.
+Ojo: si copias los archivos a otra carpeta o disco, la copia recibe una fecha de creación nueva y se pierde el orden. Ejecútalo donde se descargaron, o mueve en vez de copiar.
 
 Opciones:
 
-| Opción | Qué hace |
-|---|---|
-| `-n N`, `--start N` | Número con el que empieza (por defecto 1). `-n 36` genera `036`, `037`... |
-| `-e LISTA`, `--ext LISTA` | Extensiones a procesar, separadas por comas y sin punto. Ej: `-e mp4,mkv` |
+| Opción                    | Qué hace                                                   |
+| ------------------------- | ---------------------------------------------------------- |
+| `-n N`, `--start N`       | Número inicial (por defecto 1). `-n 36` da `036`, `037`... |
+| `-e LISTA`, `--ext LISTA` | Extensiones a procesar, separadas por comas y sin punto    |
 
-Ejemplos:
+Por defecto procesa `mp4, mkv, avi, mov, webm, m4v, ts, flv, wmv`. Si dos archivos tienen exactamente la misma fecha, los ordena por nombre y te avisa. Si tu sistema de archivos no guarda la fecha de creación, se detiene sin cambiar nada.
 
-```bash
-orgie -s .                       # numera desde 01 (o 001 si son 100 o más)
-orgie -s -n 36 .                 # numera desde 036
-orgie -s -e mkv ~/Series/Temp1   # solo archivos .mkv de esa carpeta
-```
+## Subtítulos (`-t`)
 
-### Cómo decide el orden
-
-Se usa la fecha de **creación**: el instante en que el archivo apareció en tu disco al empezar a descargarse, y no cambia después. **Haz clic en descargar en el orden correcto** (capítulo 1, luego 2, luego 3...) y el script respetará ese orden aunque Telegram termine las descargas en otro orden. La fecha de *modificación* no se usa porque cambia cuando termina la descarga.
-
-Cosas que pueden estropear la fecha de creación:
-
-- Copiar los archivos (con `cp` o con el administrador de archivos) a otra carpeta o disco: la copia recibe una fecha nueva. Ejecuta orgie en la carpeta donde se descargaron, o mueve (no copies) dentro del mismo disco.
-- Si dos archivos tienen exactamente la misma fecha, se avisa y entre ellos se ordena por nombre.
-- Si el sistema de archivos no guarda la fecha de creación, orgie lo detecta y se detiene sin cambiar nada.
-
-## Modo `--subs`
-
-Descarga subtítulos para una película (o para todos los videos de una carpeta) y los guarda **junto al video, con el mismo nombre**:
+Descarga el subtítulo y lo guarda al lado del video con el mismo nombre:
 
 ```
 Pelicula.mkv
-Pelicula.es.srt     <- lo crea orgie
+Pelicula.es.srt
 ```
 
-Reproductores como VLC o mpv cargan ese archivo solos al abrir la película, sin configurar nada.
+VLC, mpv y casi cualquier reproductor lo cargan solos. Si le pasas una carpeta revisa todos sus videos (sin entrar en subcarpetas); si le pasas un archivo, solo ese. Si el video ya tiene su `.es.srt` lo salta. No pide confirmación porque solo agrega archivos, nunca cambia ni borra los que ya tienes.
 
-1. Si le pasas un archivo, trabaja con ese video; si le pasas una carpeta, con todos sus videos (misma lista de extensiones que `--series`, no entra en subcarpetas).
-2. Si el video ya tiene `Pelicula.es.srt`, lo omite. Si trae un subtítulo incrustado en ese idioma, tampoco descarga.
-3. Busca en tres sitios que **no piden cuenta**: podnapisi.net, subt.is y subtitulamos.tv. Elige el subtítulo que mejor coincide con el nombre/versión del video, prefiriendo los normales sobre los de sordos.
-4. Guarda el resultado y al final muestra cuántos se descargaron, cuántos ya existían y cuántos no tuvieron resultado.
-
-No pide confirmación porque solo **agrega** archivos `.srt`; no cambia ni borra nada existente. Para quitar uno, bórralo a mano.
-
-Opciones:
-
-| Opción | Qué hace |
-|---|---|
-| `-l CÓDIGO`, `--lang CÓDIGO` | Idioma del subtítulo (por defecto `es`). Ej: `-l en`, `-l pt-BR` |
-| `-e LISTA`, `--ext LISTA` | Extensiones a procesar (solo al pasar una carpeta) |
-
-Honestidad sobre la calidad: los subtítulos los suben usuarios, así que no se puede garantizar que sean buenos ni que exista uno para cada película. Si el resultado sale desincronizado o malo, bórralo y prueba otro.
-
-### Privacidad
-
-- No usa cuentas, claves de API ni archivos de configuración (ignora cualquier configuración de subliminal que tengas).
-- Solo se contactan los tres sitios de arriba. Esos sitios ven tu IP y lo que se pregunta (título/año deducidos del nombre del archivo y una huella del video). **No se sube el video.**
-- Orgie no envía nada a ningún otro lugar. Si quieres más privacidad frente a esos sitios, usa una VPN.
-
-### Qué necesita (solo este modo)
-
-Los modos `--games` y `--series` no necesitan nada de esto. Para `--subs` hace falta **subliminal**, un programa en Python que hace la búsqueda y descarga. Se instala una vez, sin `sudo`, con `pipx`, que lo guarda aislado en su propia carpeta sin mezclarlo con el resto del sistema (ocupa unos 50 MB):
+Para buscar usa [subliminal](https://github.com/Diaoul/subliminal), que se instala una vez con pipx. Los otros modos no lo necesitan:
 
 ```bash
 pipx install subliminal
 ```
 
-Si no tienes `pipx`: `sudo apt install pipx` (Debian/Ubuntu/Kubuntu) o `sudo pacman -S python-pipx` (Arch/Omarchy). Para quitarlo del todo: `pipx uninstall subliminal`. Orgie nunca lo instala por su cuenta: si falta, te lo dice y se detiene.
+Si no tienes pipx: `sudo apt install pipx` (Debian, Ubuntu) o `sudo pacman -S python-pipx` (Arch). Para quitarlo: `pipx uninstall subliminal`. orgie nunca lo instala por su cuenta.
+
+### Dónde busca
+
+En este orden, y se queda con el primero que encuentre:
+
+1. **OpenSubtitles**, solo si iniciaste sesión. Es el catálogo más grande.
+2. **subt.is** y **subtitulamos.tv** (este último solo sirve para series).
+3. **BSPlayer**. Este va último porque su conexión no es cifrada; solo se llega a él si los demás no tenían nada.
+
+Sin cuenta de OpenSubtitles el catálogo queda muy limitado, y para películas poco comunes lo normal es que no haya resultado. Los subtítulos los suben usuarios, así que tampoco se puede asegurar que estén bien sincronizados; si uno sale mal, bórralo.
+
+### La cuenta de OpenSubtitles
+
+La primera vez que uses `-t`, orgie pregunta si quieres iniciar sesión. Si dices que sí, te pide usuario y contraseña (la contraseña no se ve al escribirla) y los guarda para las próximas veces. Si dices que no, usa solo las otras fuentes y volverá a preguntar la siguiente vez. Si todavía no tienes cuenta, créala gratis en [opensubtitles.com](https://www.opensubtitles.com), confirma el correo y vuelve a correr orgie.
+
+- Tu usuario y contraseña solo los recibe OpenSubtitles, que los necesita para funcionar. orgie no los manda a ningún otro sitio y yo no recibo nada.
+- Se guardan en texto normal en `~/.config/orgie/opensubtitles.toml`. La carpeta y el archivo solo los puede leer tu usuario, y la contraseña nunca se pasa por la línea de comandos. Aun así, no uses ahí una contraseña que repitas en otros sitios.
+- Las cuentas gratuitas tienen un límite diario de descargas. Si lo alcanzas, orgie lo dice y sigue con las otras fuentes.
+- Si la contraseña guardada deja de funcionar, te ofrece escribirla de nuevo.
+- Para cerrar sesión basta con borrar las carpetas de orgie: `rm -r ~/.config/orgie ~/.cache/orgie`. `orgie --uninstall` también las quita.
+
+### Privacidad
+
+Los sitios de arriba ven tu IP y lo que se busca (el nombre del archivo y una huella del video). El video no se sube. Aparte de eso, orgie no manda datos a ningún lado.
+
+### Opciones
+
+| Opción                       | Qué hace                                           |
+| ---------------------------- | -------------------------------------------------- |
+| `-l CÓDIGO`, `--lang CÓDIGO` | Idioma (por defecto `es`). Ejemplos: `en`, `pt-BR` |
+| `-e LISTA`, `--ext LISTA`    | Extensiones a procesar cuando le pasas una carpeta |
 
 ## Requisitos
 
-- Bash y `stat` de GNU (incluidos en cualquier distro Linux).
-- Solo para `--subs`: `subliminal` (ver arriba).
-- Solo para `--games`, al menos una herramienta de extracción:
-  ```bash
-  sudo apt install unrar        # para .rar
-  sudo apt install unzip        # para .zip
-  sudo apt install p7zip-full   # alternativa que cubre ambos formatos
-  ```
+Bash y el `stat` de GNU, que ya vienen en cualquier distro Linux. Para `-g`, una herramienta de extracción (arriba). Para `-t`, subliminal.
 
-## Notas de seguridad
+## Seguridad
 
-- Nunca renombra ni borra nada sin pedir confirmación explícita (`s`/`n`).
-- `--games` solo borra los archivos que se extrajeron correctamente en esa ejecución, y solo si lo confirmas. Es seguro ejecutarlo varias veces sobre la misma carpeta.
-- `--series` no pisa archivos existentes: si un nombre nuevo choca con un archivo que no es del lote, se detiene sin cambiar nada.
-- `--install` solo copia un archivo a `~/.local/bin` y `--uninstall` solo borra ese mismo archivo; ninguno usa `sudo` ni edita tu configuración.
-- No usa `sudo` ni abre puertos. Solo `--subs` accede a internet, y únicamente a los tres sitios indicados.
-- Si `--series` se interrumpe a medias, pueden quedar archivos `.orgie.tmp.N` (son tus videos); orgie se niega a continuar hasta que los revises.
-
-## Resultado esperado
-
-- `--games`: una carpeta por juego con base y updates juntos, más un `README.md` con los tamaños.
-- `--series`: los videos numerados en el orden en que empezaron a descargarse, sin ningún otro archivo modificado ni creado.
-- `--subs`: un `Nombre.es.srt` junto a cada película que tuvo resultado, listo para que el reproductor lo cargue solo.
+- Nunca renombra ni borra nada sin preguntar. `-t` es la excepción porque solo agrega archivos.
+- `-s` no pisa archivos: si un nombre nuevo choca con uno que no es del lote, se detiene sin cambiar nada. Si se interrumpe a medias pueden quedar archivos `.orgie.tmp.N`; son tus videos con nombre temporal y orgie no seguirá hasta que los revises.
+- `-g` solo borra los archivos que extrajo bien en esa ejecución y solo si lo confirmas.
+- No usa `sudo` ni abre puertos. Solo `-t` entra a internet.
 
 ## Licencia
 
-MIT — ver [LICENSE](./LICENSE).
+MIT. Ver [LICENSE](./LICENSE).

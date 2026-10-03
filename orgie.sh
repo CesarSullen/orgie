@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 
-# orgie.sh — gestor de organizaciones de archivos. Ver README.md para uso e instalación.
+# orgie.sh: gestor de organizaciones de archivos. Uso e instalación en el README.
 
 set -uo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 INSTALL_DIR="$HOME/.local/bin"
 INSTALL_PATH="$INSTALL_DIR/orgie"
+
+# Archivos que orgie guarda en el modo -t (sesión de OpenSubtitles y caché)
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/orgie"
+CONF_FILE="$CONF_DIR/opensubtitles.toml"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/orgie"
 TMP_PREFIX=".orgie.tmp."
 DEFAULT_EXTS="mp4,mkv,avi,mov,webm,m4v,ts,flv,wmv"
 
@@ -18,36 +23,31 @@ shopt -s nullglob
 
 usage() {
     cat <<'EOF'
-orgie — gestor de organizaciones de archivos
+orgie: gestor de organizaciones de archivos
 
 Uso: orgie <modo> [opciones] [carpeta]
 
-Si no se indica carpeta, se usa el directorio actual (.).
+Si no indicas carpeta se usa la actual (.).
 
 Modos (hay que elegir uno):
-  -g, --games      Descomprime y organiza archivos .rar/.zip de juegos de
-                   Nintendo Switch en una carpeta por juego, y genera un
-                   README.md con el tamaño de cada una.
+  -g, --games      Descomprime juegos de Nintendo Switch (.rar/.zip), crea una
+                   carpeta por juego y genera un README.md con los tamaños.
   -s, --series     Renombra los videos con números (01, 02... o 001, 002...)
-                   según su fecha de CREACIÓN en el disco, conservando la
-                   extensión. Muestra vista previa y pide confirmación.
-                   El renombrado no se puede deshacer.
-  -t, --subs       Descarga subtítulos (por defecto en español) para un video
-                   o para todos los de una carpeta, y los guarda junto al
-                   video con el mismo nombre (Pelicula.es.srt) para que el
-                   reproductor los cargue solo. No usa cuentas. Necesita
-                   tener 'subliminal' instalado (solo para este modo).
-
-  --install        Copia este script a ~/.local/bin/orgie para poder usar el
-                   comando 'orgie' desde cualquier carpeta. No usa sudo.
-  --uninstall      Quita ~/.local/bin/orgie (la copia instalada).
+                   según su fecha de creación en el disco, y conserva la
+                   extensión. Enseña una vista previa y pide confirmación.
+                   No se puede deshacer.
+  -t, --subs       Descarga subtítulos (en español por defecto) de un video o
+                   de todos los de una carpeta, y los guarda al lado con el
+                   mismo nombre (Pelicula.es.srt). Necesita 'subliminal'.
+  --install        Copia orgie a ~/.local/bin/orgie para usarlo desde cualquier
+                   carpeta. No usa sudo.
+  --uninstall      Quita orgie y lo que haya guardado (sesión y caché).
 
 Opciones de --series:
-  -n, --start N    Número con el que empieza (por defecto 1).
-                   Ej: -n 36 -> 036, 037...
+  -n, --start N    Número inicial (por defecto 1). Con -n 36 sale 036, 037...
 
 Opciones de --subs:
-  -l, --lang COD   Idioma del subtítulo (por defecto es). Ej: en, pt-BR.
+  -l, --lang COD   Idioma (por defecto es). Ejemplos: en, pt-BR.
 
 Opciones de --series y --subs:
   -e, --ext LISTA  Extensiones a procesar, separadas por comas y sin punto.
@@ -55,7 +55,7 @@ Opciones de --series y --subs:
 
 Generales:
   -h, --help       Muestra esta ayuda.
-  -V, --version    Muestra la versión.
+  -v, --version    Muestra la versión.
 
 Ejemplos:
   orgie -g ~/Games
@@ -65,8 +65,6 @@ Ejemplos:
   orgie -t ~/Peliculas
   bash orgie.sh --install
   orgie --uninstall
-
-Ver más detalle en el README del repositorio.
 EOF
 }
 
@@ -369,11 +367,9 @@ mode_games() {
 #  Modo --series
 # ============================================================
 
-# apply_renames
-# Usa los arrays globales SRC[] y DST[] (nombres, no rutas) y renombra SRC[i] -> DST[i].
-# Lo hace en dos fases (primero a nombres temporales) para que nunca se pisen
-# archivos entre sí. Si algo falla en la fase 1, revierte lo hecho.
-# Devuelve 0 si todo salió bien.
+# apply_renames: renombra SRC[i] a DST[i] (arrays globales, solo nombres).
+# Pasa primero por nombres temporales para que ningún archivo pise a otro.
+# Si algo falla en esa primera vuelta, deja todo como estaba.
 apply_renames() {
     local n=${#SRC[@]} i j bad=0
 
@@ -521,7 +517,7 @@ mode_series() {
     fi
     echo ""
 
-    # Seguridad: ningún nombre nuevo puede pisar un archivo que no sea parte del lote.
+    # Un nombre nuevo no puede pisar un archivo que no sea del lote.
     local conflicts=0 i
     for i in "${!DST[@]}"; do
         if [[ -e "$TARGET_DIR/${DST[i]}" && -z "${in_src[${DST[i]}]:-}" ]]; then
@@ -586,6 +582,110 @@ subs_count() {
     echo "${#found[@]}"
 }
 
+# Guarda usuario y contraseña de OpenSubtitles en un archivo que solo lee tu usuario.
+save_login() {
+    local u="$1" p="$2"
+
+    # El archivo es TOML: hay que escapar barras y comillas
+    u="${u//\\/\\\\}"
+    u="${u//\"/\\\"}"
+    p="${p//\\/\\\\}"
+    p="${p//\"/\\\"}"
+
+    mkdir -p -m 700 "$CONF_DIR" && chmod 700 "$CONF_DIR" || return 1
+
+    (
+        umask 077
+        printf '[provider.opensubtitlescom]\nusername = "%s"\npassword = "%s"\n' "$u" "$p" > "$CONF_FILE"
+    ) || return 1
+
+    chmod 600 "$CONF_FILE"
+}
+
+# Pide usuario y contraseña (la contraseña no se ve al escribirla) y los guarda.
+ask_login() {
+    local user pass
+
+    read -r -p "      Usuario de OpenSubtitles (vacío para cancelar): " user
+    [[ -n "$user" ]] || return 1
+
+    read -r -s -p "      Contraseña: " pass
+    echo ""
+    [[ -n "$pass" ]] || return 1
+
+    if [[ "$user$pass" =~ [[:cntrl:]] ]]; then
+        echo "      El usuario o la contraseña tienen caracteres no válidos." >&2
+        return 1
+    fi
+
+    if ! save_login "$user" "$pass"; then
+        echo "      No se pudo guardar la sesión en $CONF_DIR." >&2
+        return 1
+    fi
+
+    SUB_CONF="$CONF_FILE"
+    echo "      Sesión guardada en $CONF_DIR"
+    return 0
+}
+
+# run_stage <sitios separados por espacio> <video>
+# Deja la salida de subliminal en STAGE_OUT. Se usa --debug solo para poder leer
+# los errores de cada sitio, porque si no subliminal los oculta.
+run_stage() {
+    local args=() site
+    for site in $1; do
+        args+=(-p "$site")
+    done
+
+    STAGE_OUT="$(subliminal --debug --cache-dir "$CACHE_DIR" -c "$SUB_CONF" \
+        download -l "$SUB_LANG" "${args[@]}" \
+        -r hash -r metadata -C n,hi,fo -- "$2" 2>&1)"
+    STAGE_RC=$?
+}
+
+# try_stage <sitios> <video>
+# Devuelve 0 si se descargó un subtítulo. En STAGE_NOTE queda el resultado.
+try_stage() {
+    local base="${2%.*}" before after bad_sites
+
+    before="$(subs_count "$base")"
+    run_stage "$1" "$2"
+    after="$(subs_count "$base")"
+
+    STAGE_AUTH_FAIL=0
+    STAGE_LIMIT=0
+
+    if [[ $after -gt $before ]]; then
+        STAGE_NOTE="descargado"
+        return 0
+    fi
+
+    # Nombres de error tal como los muestra subliminal al hablar con OpenSubtitles
+    if [[ "$STAGE_OUT" == *UnknownUserAgent* || "$STAGE_OUT" == *DisabledUserAgent* ]]; then
+        STAGE_NOTE="OpenSubtitles no acepta a subliminal (no es problema de tu cuenta)"
+        STAGE_LIMIT=1
+    elif [[ "$STAGE_OUT" == *Unauthorized* || "$STAGE_OUT" == *NoSession* || "$STAGE_OUT" == *AuthenticationError* ]]; then
+        STAGE_NOTE="usuario o contraseña rechazados"
+        STAGE_AUTH_FAIL=1
+    elif [[ "$STAGE_OUT" == *DownloadLimitReached* || "$STAGE_OUT" == *DownloadLimitExceeded* ]]; then
+        STAGE_NOTE="límite diario de descargas alcanzado"
+        STAGE_LIMIT=1
+    else
+        bad_sites="$(printf '%s\n' "$STAGE_OUT" \
+            | sed -n -E 's/^ERROR:subliminal\.utils:.*[Pp]rovider ([A-Za-z0-9_]+)$/\1/p' \
+            | sort -u | tr '\n' ' ')"
+        bad_sites="${bad_sites% }"
+        if [[ -n "$bad_sites" ]]; then
+            STAGE_NOTE="no se pudo consultar (${bad_sites// /, })"
+        elif [[ $STAGE_RC -ne 0 ]]; then
+            STAGE_NOTE="error de subliminal"
+        else
+            STAGE_NOTE="sin resultado"
+        fi
+    fi
+    return 1
+}
+
 mode_subs() {
     banner "Descargador de subtítulos"
 
@@ -595,7 +695,7 @@ mode_subs() {
     fi
 
     # --- 1. Ruta ---
-    echo "[1/4] Comprobando ruta..."
+    echo "[1/5] Comprobando ruta..."
 
     local input="${TARGET_ARG:-.}"
     local videos=() f
@@ -611,7 +711,7 @@ mode_subs() {
     fi
 
     # --- 2. Herramientas ---
-    echo "[2/4] Comprobando herramientas..."
+    echo "[2/5] Comprobando herramientas..."
 
     if ! command -v subliminal >/dev/null 2>&1; then
         echo "Error: no se encontró 'subliminal' (solo hace falta para este modo)." >&2
@@ -633,8 +733,46 @@ mode_subs() {
     echo "      Disponible: $(subliminal --version 2>/dev/null | head -n 1)"
     echo ""
 
-    # --- 3. Buscar videos (si se indicó una carpeta) ---
-    echo "[3/4] Buscando videos..."
+    # --- 3. Cuenta de OpenSubtitles ---
+    echo "[3/5] Cuenta de OpenSubtitles..."
+
+    SUB_CONF=/dev/null
+    local logged=0 ans
+
+    if [[ -f "$CONF_FILE" ]]; then
+        SUB_CONF="$CONF_FILE"
+        logged=1
+        echo "      Hay una sesión guardada en $CONF_DIR"
+    else
+        cat <<EOF
+      OpenSubtitles es la fuente de subtítulos más completa, pero necesita tu
+      cuenta (es gratis). Sin ella orgie solo usa otras fuentes, con catálogos
+      mucho más pequeños y que fallan más.
+
+      Tu usuario y tu contraseña solo los recibe OpenSubtitles, que los necesita
+      para funcionar. Se guardan en $CONF_DIR
+      y no se envían a ningún otro sitio. El autor de orgie no recibe nada.
+
+      Si no tienes cuenta, créala en https://www.opensubtitles.com, confirma el
+      correo y vuelve a ejecutar orgie.
+
+EOF
+        read -r -p "      ¿Iniciar sesión con tu cuenta de OpenSubtitles? (s/n): " ans
+        echo ""
+        if [[ "$ans" == "s" || "$ans" == "S" ]]; then
+            if ask_login; then
+                logged=1
+            else
+                echo "      No se guardó ninguna sesión; se usarán solo las otras fuentes."
+            fi
+        else
+            echo "      Sin cuenta: se usarán solo las otras fuentes."
+        fi
+    fi
+    echo ""
+
+    # --- 4. Buscar videos (si se indicó una carpeta) ---
+    echo "[4/5] Buscando videos..."
 
     if [[ ${#videos[@]} -eq 0 ]]; then
         local -A allowed=()
@@ -668,52 +806,86 @@ mode_subs() {
     echo "      Videos encontrados: $total"
     echo ""
 
-    # --- 4. Descargar ---
-    echo "[4/4] Buscando subtítulos ($SUB_LANG)..."
-    echo "      Sitios consultados (sin cuenta): podnapisi.net, subt.is, subtitulamos.tv"
+    # --- 5. Descargar ---
+    echo "[5/5] Buscando subtítulos ($SUB_LANG)..."
+    local order="subt.is y subtitulamos.tv"
+    [[ $logged -eq 1 ]] && order="OpenSubtitles, $order"
+    echo "      Orden: $order, y al final BSPlayer."
+    echo "      BSPlayer no usa conexión cifrada, por eso solo se prueba si los demás no tienen nada."
     echo ""
 
-    local got=0 skipped=0 notfound=0 failed=0 i=0
-    local video base before after out rc
+    # Primero los sitios con conexión cifrada, BSPlayer el último
+    local stages=() labels=()
+    if [[ $logged -eq 1 ]]; then
+        stages+=("opensubtitlescom")
+        labels+=("OpenSubtitles")
+    fi
+    stages+=("subtis subtitulamos")
+    labels+=("subt.is / subtitulamos")
+    stages+=("bsplayer")
+    labels+=("BSPlayer")
+
+    mkdir -p -m 700 "$CACHE_DIR" 2>/dev/null
+
+    local got=0 skipped=0 notfound=0 i=0 s video found skip_os=0 relogin_done=0
 
     for video in "${videos[@]}"; do
         i=$((i + 1))
-        base="${video%.*}"
 
         echo "----------------------------------------"
         echo "  [$i/$total] ${video##*/}"
         echo "----------------------------------------"
 
-        if [[ -e "$base.$SUB_LANG.srt" ]]; then
+        if [[ -e "${video%.*}.$SUB_LANG.srt" ]]; then
             echo "      Ya tiene subtítulo ($SUB_LANG), se omite."
             echo ""
             skipped=$((skipped + 1))
             continue
         fi
 
-        before="$(subs_count "$base")"
+        found=0
 
-        # -c /dev/null: no lee ninguna configuración (ni cuentas guardadas).
-        # -p: solo estos tres sitios, ninguno exige cuenta.
-        # -r: solo refinadores locales (no consultan servicios externos).
-        # -C: prefiere subtítulos normales sobre los de sordos/solo-extranjero.
-        out="$(subliminal -c /dev/null download -l "$SUB_LANG" \
-            -p podnapisi -p subtis -p subtitulamos \
-            -r hash -r metadata \
-            -C n,hi,fo -- "$video" 2>&1)"
-        rc=$?
+        for ((s = 0; s < ${#stages[@]}; s++)); do
+            if [[ "${stages[s]}" == "opensubtitlescom" && $skip_os -eq 1 ]]; then
+                continue
+            fi
 
-        after="$(subs_count "$base")"
+            printf '      %-24s ' "${labels[s]}"
 
-        if [[ $after -gt $before ]]; then
-            echo "      Subtítulo descargado."
+            if try_stage "${stages[s]}" "$video"; then
+                echo "$STAGE_NOTE"
+                found=1
+                break
+            fi
+            echo "$STAGE_NOTE"
+
+            if [[ "${stages[s]}" == "opensubtitlescom" ]]; then
+                if [[ $STAGE_LIMIT -eq 1 ]]; then
+                    skip_os=1
+                elif [[ $STAGE_AUTH_FAIL -eq 1 ]]; then
+                    skip_os=1
+                    if [[ $relogin_done -eq 0 ]]; then
+                        relogin_done=1
+                        read -r -p "      ¿Volver a escribir tus datos de OpenSubtitles? (s/n): " ans
+                        if [[ "$ans" == "s" || "$ans" == "S" ]] && ask_login; then
+                            skip_os=0
+                            printf '      %-24s ' "${labels[s]}"
+                            if try_stage "${stages[s]}" "$video"; then
+                                echo "$STAGE_NOTE"
+                                found=1
+                                break
+                            fi
+                            echo "$STAGE_NOTE"
+                            [[ $STAGE_AUTH_FAIL -eq 1 || $STAGE_LIMIT -eq 1 ]] && skip_os=1
+                        fi
+                    fi
+                fi
+            fi
+        done
+
+        if [[ $found -eq 1 ]]; then
             got=$((got + 1))
-        elif [[ $rc -ne 0 ]]; then
-            echo "      Error al buscar (¿sin internet?). Detalle:" >&2
-            echo "$out" | tail -n 3 | sed 's/^/        /' >&2
-            failed=$((failed + 1))
         else
-            echo "      No se descargó nada (no hay subtítulo disponible, el video ya trae uno incrustado, o no hubo conexión)."
             notfound=$((notfound + 1))
         fi
         echo ""
@@ -724,10 +896,9 @@ mode_subs() {
     echo "  Subtítulos descargados:   $got"
     echo "  Ya tenían subtítulo:      $skipped"
     echo "  Sin resultado:            $notfound"
-    echo "  Con error:                $failed"
     echo ""
 
-    [[ $failed -eq 0 ]]
+    return 0
 }
 
 # ============================================================
@@ -808,31 +979,55 @@ mode_install() {
 mode_uninstall() {
     banner "Desinstalación de orgie"
 
-    if [[ ! -e "$INSTALL_PATH" && ! -L "$INSTALL_PATH" ]]; then
-        echo "      orgie no está instalado en '$INSTALL_PATH'. No hay nada que quitar."
+    local has_bin=0 has_conf=0 has_cache=0
+
+    [[ -e "$INSTALL_PATH" || -L "$INSTALL_PATH" ]] && has_bin=1
+    [[ -d "$CONF_DIR" && ! -L "$CONF_DIR" ]] && has_conf=1
+    [[ -d "$CACHE_DIR" && ! -L "$CACHE_DIR" ]] && has_cache=1
+
+    if [[ $((has_bin + has_conf + has_cache)) -eq 0 ]]; then
+        echo "      No hay nada de orgie instalado ni guardado. No hay nada que quitar."
         echo ""
         return 0
     fi
 
-    if ! is_orgie_file "$INSTALL_PATH"; then
+    if [[ $has_bin -eq 1 ]] && ! is_orgie_file "$INSTALL_PATH"; then
         echo "Error: '$INSTALL_PATH' no parece ser orgie, así que no se borra por seguridad." >&2
         echo "Revísalo a mano." >&2
         exit 1
     fi
 
+    # Las carpetas solo se borran si su ruta termina en /orgie
+    if [[ $has_conf -eq 1 ]] && ! [[ "$CONF_DIR" == */orgie && "$CONF_DIR" != "/orgie" ]]; then
+        echo "Error: la carpeta de configuración '$CONF_DIR' tiene una ruta rara; no se borra." >&2
+        exit 1
+    fi
+    if [[ $has_cache -eq 1 ]] && ! [[ "$CACHE_DIR" == */orgie && "$CACHE_DIR" != "/orgie" ]]; then
+        echo "Error: la carpeta de caché '$CACHE_DIR' tiene una ruta rara; no se borra." >&2
+        exit 1
+    fi
+
+    echo "      Se va a quitar:"
+    [[ $has_bin -eq 1 ]]   && echo "        $INSTALL_PATH"
+    [[ $has_conf -eq 1 ]]  && echo "        $CONF_DIR   (incluye tu sesión de OpenSubtitles)"
+    [[ $has_cache -eq 1 ]] && echo "        $CACHE_DIR"
+    echo ""
+
     local confirm
-    read -r -p "¿Eliminar $INSTALL_PATH? (s/n): " confirm
+    read -r -p "¿Continuar? (s/n): " confirm
     if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
         echo ""
         echo "No se cambió nada."
         return 0
     fi
 
-    rm -f -- "$INSTALL_PATH"
+    [[ $has_bin -eq 1 ]]   && rm -f -- "$INSTALL_PATH"
+    [[ $has_conf -eq 1 ]]  && rm -rf -- "$CONF_DIR"
+    [[ $has_cache -eq 1 ]] && rm -rf -- "$CACHE_DIR"
 
     echo ""
-    echo "      Desinstalado. Solo se quitó '$INSTALL_PATH'; tu archivo orgie.sh"
-    echo "      descargado (si lo conservas) y la línea de PATH (si la añadiste) no se tocan."
+    echo "      Listo. Tu orgie.sh descargado (si lo conservas) y la línea de PATH"
+    echo "      (si la añadiste) no se tocan."
     echo ""
 }
 
@@ -875,7 +1070,7 @@ need_value() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)    usage; exit 0 ;;
-        -V|--version) echo "orgie $VERSION"; exit 0 ;;
+        -v|--version) echo "orgie $VERSION"; exit 0 ;;
         -g|--games)   set_mode games;  shift ;;
         -s|--series)  set_mode series; shift ;;
         -t|--subs)    set_mode subs;   shift ;;
