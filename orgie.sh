@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-VERSION="0.6.0"
+VERSION="0.7.0"
 INSTALL_DIR="$HOME/.local/bin"
 INSTALL_PATH="$INSTALL_DIR/orgie"
 REPO_RAW_URL="https://raw.githubusercontent.com/CesarSullen/orgie/main/orgie.sh"
@@ -60,6 +60,9 @@ Modos (hay que elegir uno):
 Opciones de --series:
   -n, --start N      Número inicial (por defecto 1). Con -n 36 sale 036, 037...
                      Junto con -p, solo afecta a la primera temporada.
+  --by-name          Ordena por nombre (orden natural: 2 va antes que 10) en
+                     lugar de por fecha de creación. Sirve para carpetas ya
+                     numeradas, o cuando la fecha de creación no es fiable.
 
 Opciones de --subs:
   -l, --lang COD     Idioma (por defecto es). Ejemplos: en, pt-BR.
@@ -78,6 +81,7 @@ Ejemplos:
   orgie -s -n 36 -e mkv ~/Series/Temporada1
   orgie -p 24,12,13 ~/Series/MiSerie
   orgie -p 11,12 -s ~/Series/MiSerie
+  orgie -s --by-name ~/Series/MiSerie
   orgie -d ~/Downloads
   orgie -t ~/Peliculas/MiPelicula.mkv
   orgie --update
@@ -428,6 +432,16 @@ mode_games() {
 #  Modo --series
 # ============================================================
 
+# sort_entries: ordena líneas "fecha<TAB>nombre" por fecha de creación o, con
+# --by-name, por nombre en orden natural (2 antes que 10).
+sort_entries() {
+    if [[ $BY_NAME -eq 1 ]]; then
+        LC_ALL=C sort -t $'\t' -k2,2V
+    else
+        LC_ALL=C sort -t $'\t' -k1,1 -k2,2
+    fi
+}
+
 # apply_renames: renombra SRC[i] a DST[i] (arrays globales, solo nombres).
 # Pasa primero por nombres temporales para que ningún archivo pise a otro.
 # Si algo falla en esa primera vuelta, deja todo como estaba.
@@ -457,6 +471,10 @@ apply_renames() {
 # print_series_line <índice>
 print_series_line() {
     local i="$1" when
+    if [[ $BY_NAME -eq 1 ]]; then
+        printf '      %s  <-  %s\n' "${DST[i]}" "${SRC[i]}"
+        return
+    fi
     when="$(date -d "@${BIRTH[i]%.*}" '+%d/%m %H:%M:%S')"
     printf '      %s  <-  %s   (creado %s)\n' "${DST[i]}" "${SRC[i]}" "$when"
 }
@@ -477,7 +495,7 @@ mode_series() {
     # --- 2. Herramientas ---
     echo "[2/5] Comprobando herramientas..."
 
-    if ! stat -c '%W' / >/dev/null 2>&1; then
+    if [[ $BY_NAME -eq 0 ]] && ! stat -c '%W' / >/dev/null 2>&1; then
         echo "Error: 'stat' no soporta la fecha de creación (se necesita GNU stat, el de Linux)." >&2
         exit 1
     fi
@@ -495,7 +513,11 @@ mode_series() {
     fi
 
     # --- 3. Buscar videos y ordenarlos ---
-    echo "[3/5] Buscando videos y leyendo su fecha de creación..."
+    if [[ $BY_NAME -eq 1 ]]; then
+        echo "[3/5] Buscando videos y ordenándolos por nombre..."
+    else
+        echo "[3/5] Buscando videos y leyendo su fecha de creación..."
+    fi
 
     local -A allowed=()
     local ext_list e
@@ -521,11 +543,16 @@ mode_series() {
             continue
         fi
 
-        birth="$(stat -c '%.9W' -- "$f")"
-        if ! [[ "$birth" =~ ^[1-9][0-9]*(\.[0-9]+)?$ ]]; then
-            echo "Error: no se pudo leer la fecha de creación de '$name'." >&2
-            echo "Tu sistema de archivos quizá no la guarda, así que no es seguro ordenar con ella." >&2
-            exit 1
+        if [[ $BY_NAME -eq 1 ]]; then
+            birth="-"
+        else
+            birth="$(stat -c '%.9W' -- "$f")"
+            if ! [[ "$birth" =~ ^[1-9][0-9]*(\.[0-9]+)?$ ]]; then
+                echo "Error: no se pudo leer la fecha de creación de '$name'." >&2
+                echo "Tu sistema de archivos quizá no la guarda, así que no es seguro ordenar con ella." >&2
+                echo "Puedes usar --by-name para ordenar por nombre en vez de por fecha." >&2
+                exit 1
+            fi
         fi
 
         lines+=("$birth"$'\t'"$name")
@@ -540,8 +567,9 @@ mode_series() {
     fi
 
     # Orden: fecha de creación (con nanosegundos) y, si empatan, por nombre.
+    # Con --by-name, por nombre en orden natural.
     local sorted
-    mapfile -t sorted < <(printf '%s\n' "${lines[@]}" | LC_ALL=C sort -t $'\t' -k1,1 -k2,2)
+    mapfile -t sorted < <(printf '%s\n' "${lines[@]}" | sort_entries)
 
     local last=$((START + total - 1))
     local width=${#last}
@@ -565,7 +593,7 @@ mode_series() {
         BIRTH+=("$birth")
         in_src["$name"]=1
 
-        [[ "$birth" == "$prev_birth" ]] && ties=$((ties + 1))
+        [[ $BY_NAME -eq 0 && "$birth" == "$prev_birth" ]] && ties=$((ties + 1))
         prev_birth="$birth"
     done
 
@@ -585,6 +613,19 @@ mode_series() {
             SUB_DST+=("$new_base.$rest")
         done < <(subtitle_companions "$TARGET_DIR/${SRC[i]%.*}")
     done
+
+    local changes=0
+    for ((i = 0; i < total; i++)); do
+        [[ "${SRC[i]}" != "${DST[i]}" ]] && changes=$((changes + 1))
+    done
+    for ((i = 0; i < ${#SUB_SRC[@]}; i++)); do
+        [[ "${SUB_SRC[i]}" != "${SUB_DST[i]}" ]] && changes=$((changes + 1))
+    done
+    if [[ $changes -eq 0 ]]; then
+        echo "      Los $total videos ya tienen exactamente esos nombres. No hay nada que cambiar."
+        echo ""
+        return 0
+    fi
 
     echo "      Videos encontrados: $total"
     echo "      Numeración: de ${DST[0]%.*} a ${DST[$((total - 1))]%.*} ($width cifras)"
@@ -1504,7 +1545,11 @@ mode_update() {
 # ============================================================
 
 mode_splitseries() {
-    banner "Temporadas numeradas por fecha de creación"
+    if [[ $BY_NAME -eq 1 ]]; then
+        banner "Temporadas numeradas por nombre"
+    else
+        banner "Temporadas numeradas por fecha de creación"
+    fi
 
     if ! [[ "$SPLIT_LIST" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
         echo "Error: la lista debe ser números separados por comas, por ejemplo: -p 11,12" >&2
@@ -1532,13 +1577,17 @@ mode_splitseries() {
     echo "[1/4] Comprobando carpeta de trabajo..."
     resolve_target
 
-    if ! stat -c '%W' / >/dev/null 2>&1; then
+    if [[ $BY_NAME -eq 0 ]] && ! stat -c '%W' / >/dev/null 2>&1; then
         echo "Error: 'stat' no soporta la fecha de creación (se necesita GNU stat, el de Linux)." >&2
         exit 1
     fi
 
     # --- 2. Videos y fechas de creación ---
-    echo "[2/4] Buscando videos y leyendo su fecha de creación..."
+    if [[ $BY_NAME -eq 1 ]]; then
+        echo "[2/4] Buscando videos y ordenándolos por nombre..."
+    else
+        echo "[2/4] Buscando videos y leyendo su fecha de creación..."
+    fi
 
     local -A allowed=()
     local ext_list e f name ext birth lines=() skipped=0
@@ -1563,11 +1612,16 @@ mode_splitseries() {
             continue
         fi
 
-        birth="$(stat -c '%.9W' -- "$f")"
-        if ! [[ "$birth" =~ ^[1-9][0-9]*(\.[0-9]+)?$ ]]; then
-            echo "Error: no se pudo leer la fecha de creación de '$name'." >&2
-            echo "Tu sistema de archivos quizá no la guarda, así que no es seguro ordenar con ella." >&2
-            exit 1
+        if [[ $BY_NAME -eq 1 ]]; then
+            birth="-"
+        else
+            birth="$(stat -c '%.9W' -- "$f")"
+            if ! [[ "$birth" =~ ^[1-9][0-9]*(\.[0-9]+)?$ ]]; then
+                echo "Error: no se pudo leer la fecha de creación de '$name'." >&2
+                echo "Tu sistema de archivos quizá no la guarda, así que no es seguro ordenar con ella." >&2
+                echo "Puedes usar --by-name para ordenar por nombre en vez de por fecha." >&2
+                exit 1
+            fi
         fi
         lines+=("$birth"$'\t'"$name")
     done
@@ -1581,7 +1635,7 @@ mode_splitseries() {
     fi
 
     local sorted
-    mapfile -t sorted < <(printf '%s\n' "${lines[@]}" | LC_ALL=C sort -t $'\t' -k1,1 -k2,2)
+    mapfile -t sorted < <(printf '%s\n' "${lines[@]}" | sort_entries)
 
     echo "      Videos encontrados: $total"
     [[ $skipped -gt 0 ]] && echo "      Omitidos por nombre raro: $skipped"
@@ -1627,7 +1681,7 @@ mode_splitseries() {
             V_BIRTH+=("$birth")
             V_SEASON+=("$k")
 
-            [[ "$birth" == "$prev_birth" ]] && ties=$((ties + 1))
+            [[ $BY_NAME -eq 0 && "$birth" == "$prev_birth" ]] && ties=$((ties + 1))
             prev_birth="$birth"
             idx=$((idx + 1))
         done
@@ -1674,8 +1728,12 @@ mode_splitseries() {
             if [[ $count -gt 6 && $i -ge $((start + 3)) && $i -lt $((start + count - 2)) ]]; then
                 continue
             fi
-            when="$(date -d "@${V_BIRTH[i]%.*}" '+%d/%m %H:%M:%S')"
-            printf '        %s  <-  %s   (creado %s)\n' "${V_DST[i]}" "${V_SRC[i]}" "$when"
+            if [[ $BY_NAME -eq 1 ]]; then
+                printf '        %s  <-  %s\n' "${V_DST[i]}" "${V_SRC[i]}"
+            else
+                when="$(date -d "@${V_BIRTH[i]%.*}" '+%d/%m %H:%M:%S')"
+                printf '        %s  <-  %s   (creado %s)\n' "${V_DST[i]}" "${V_SRC[i]}" "$when"
+            fi
         done
         start=$((start + count))
         echo ""
@@ -1751,6 +1809,7 @@ SPLIT_LIST=""
 START_SET=0
 EXT_SET=0
 LANG_SET=0
+BY_NAME=0
 
 set_mode() {
     local new="$1"
@@ -1797,6 +1856,7 @@ while [[ $# -gt 0 ]]; do
         -n|--start)   need_value "$1" $#; START="$2";    START_SET=1; shift 2 ;;
         -e|--ext)     need_value "$1" $#; EXTS="$2";     EXT_SET=1;   shift 2 ;;
         -l|--lang)    need_value "$1" $#; SUB_LANG="$2"; LANG_SET=1;  shift 2 ;;
+        --by-name)    BY_NAME=1; shift ;;
         --)           shift; while [[ $# -gt 0 ]]; do set_target "$1"; shift; done ;;
         -*)           echo "Error: opción desconocida: $1 (usa -h para ver la ayuda)." >&2; exit 1 ;;
         *)            set_target "$1"; shift ;;
@@ -1807,6 +1867,11 @@ if [[ -z "$MODE" ]]; then
     echo "Error: falta indicar el modo (por ejemplo -g, -s o -t)." >&2
     echo "" >&2
     usage >&2
+    exit 1
+fi
+
+if [[ $BY_NAME -eq 1 && "$MODE" != "series" && "$MODE" != "splitseries" ]]; then
+    echo "Error: --by-name solo se usa con -s (o con -p y -s juntos)." >&2
     exit 1
 fi
 

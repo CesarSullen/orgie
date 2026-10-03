@@ -72,6 +72,8 @@ orgie -s .                     # series: numera los videos de la carpeta actual
 orgie -s -n 36 .               # series: empieza en 036
 orgie -p 24,12,13 .            # temporadas: T1 con 24 capítulos, T2 con 12 y T3 con 13 (por nombre)
 orgie -p 11,12 -s .            # temporadas y numeración por fecha de creación
+orgie -p 11,12 -s --by-name .  # lo mismo, pero ordenando por nombre
+orgie -s --by-name .           # renumera por nombre una carpeta ya numerada
 orgie -d ~/Downloads           # duplicados: busca archivos idénticos en esa carpeta
 orgie --update                 # actualizar orgie
 orgie -t .                     # subtítulos: para los videos de la carpeta actual
@@ -117,8 +119,21 @@ Opciones:
 |---|---|
 | `-n N`, `--start N` | Número inicial (por defecto 1). `-n 36` da `036`, `037`... |
 | `-e LISTA`, `--ext LISTA` | Extensiones a procesar, separadas por comas y sin punto |
+| `--by-name` | Ordena por nombre en vez de por fecha de creación (ver abajo) |
 
 Por defecto procesa `mp4, mkv, avi, mov, webm, m4v, ts, flv, wmv`. Si dos archivos tienen exactamente la misma fecha, los ordena por nombre y te avisa. Si tu sistema de archivos no guarda la fecha de creación, se detiene sin cambiar nada.
+
+### Ordenar por nombre (`--by-name`)
+
+Si la fecha de creación no es fiable (copiaste los archivos y se desordenó, o tu sistema no la guarda), `-s --by-name` ordena por nombre. Usa el orden natural: `2` va antes que `10` y `99` antes que `100`, tengan las cifras que tengan.
+
+Sirve sobre todo para carpetas que ya tienen números en el nombre y a las que quieres cambiar algo de la numeración:
+
+- cerrar huecos: `001`, `002`, `005`, `007` pasan a `01`, `02`, `03`, `04`
+- empezar en otro número (`-n 36`) o pasar de dos a tres cifras
+- numerar archivos que no tienen número pero que ya quedan en el orden correcto al ordenarlos alfabéticamente
+
+Renumera de forma consecutiva, así que si falta un capítulo los siguientes se corren y el número deja de coincidir con el del episodio. Si los archivos ya tienen exactamente los nombres que saldrían, lo dice y no cambia nada. Sigue enseñando la vista previa y pidiendo confirmación, y no se puede deshacer.
 
 ## Temporadas (`-p`)
 
@@ -142,7 +157,13 @@ Ordena todos los videos por el momento en que empezaron a descargarse, mete los 
 
 Con `-n` cambia el número con el que empieza la **primera** temporada (`-p 189,12 -s -n 36` da `036` a `224` en `T1` y `01` a `12` en `T2`). Los subtítulos con el mismo nombre que un video se mueven y renombran con él. Antes de tocar nada enseña, por temporada, los primeros y los últimos y pide confirmación; no se puede deshacer, aunque si algo falla a mitad de la operación devuelve todo a como estaba.
 
-Todo lo de `-s` sobre la fecha de creación (descargar en orden, no copiar los archivos) sigue valiendo aquí.
+Todo lo de `-s` sobre la fecha de creación (descargar en orden, no copiar los archivos) sigue valiendo aquí. Si la fecha no es fiable, añade `--by-name` y el orden será por nombre:
+
+```bash
+orgie -p 11,12 -s --by-name .
+```
+
+Así, una carpeta ya numerada de corrido (`001` a `023`) se reparte en `T1` y `T2`, cada una desde `01`.
 
 ### Reglas de la lista
 

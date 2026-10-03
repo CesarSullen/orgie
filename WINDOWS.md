@@ -118,7 +118,7 @@ stat -c '%n | creado: %w' *.mkv | head -3
 Muestra el nombre y la fecha de creación de los tres primeros archivos. No cambia nada.
 
 - Si sale una fecha y hora (por ejemplo `2026-10-01 03:38:54`), `-s` va a funcionar.
-- Si en `creado:` sale un guion (`-`), tu equipo no la entrega y `-s` no se puede usar en esa carpeta. No pasa nada grave: orgie lo detecta por sí solo y se detiene sin cambiar nada. El resto de modos sí funcionan.
+- Si en `creado:` sale un guion (`-`), tu equipo no la entrega y `-s` por fecha no se puede usar en esa carpeta. No pasa nada grave: orgie lo detecta por sí solo y se detiene sin cambiar nada. Tienes dos salidas: `orgie -s --by-name .`, que ordena por nombre en vez de por fecha (sirve si los archivos ya tienen números o nombres que se ordenan bien), y el resto de modos, que funcionan igual.
 
 Importante: para que la fecha sirva, ejecuta orgie con los archivos donde se descargaron. Si los copias a otra carpeta, o dentro del disco de Ubuntu, la copia recibe una fecha nueva y el orden original se pierde.
 
@@ -129,6 +129,7 @@ Ya en la carpeta de los videos:
 ```bash
 orgie -s .                  # numera los capítulos (01, 02...) según el orden de descarga
 orgie -s -n 36 .            # igual, empezando en 036
+orgie -s --by-name .        # renumera por nombre (si la fecha de creación no sirve)
 orgie -p 24,12,13 .         # reparte en T1, T2 y T3 según los capítulos de cada temporada
 orgie -d .                  # busca archivos duplicados
 orgie -t .                  # descarga subtítulos
