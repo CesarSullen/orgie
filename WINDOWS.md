@@ -153,12 +153,13 @@ Instala `unzip` (para `.zip`) y 7-Zip (que abre `.zip` y `.rar`).
 **Subtítulos (`-t`)**: necesita subliminal, que se instala con pipx.
 
 ```bash
+sudo apt update
 sudo apt install pipx
 pipx ensurepath
 pipx install subliminal
 ```
 
-Qué hace cada línea: instala pipx, le dice a Ubuntu dónde dejará los programas, y instala subliminal aislado en su propia carpeta. Después **cierra y vuelve a abrir la ventana de Ubuntu**. La primera vez que uses `-t`, orgie te preguntará si quieres iniciar sesión con tu cuenta de OpenSubtitles; el README explica qué se guarda y dónde. Para quitar subliminal: `pipx uninstall subliminal`.
+Qué hace cada línea: actualiza la lista de programas, instala pipx, le dice a Ubuntu dónde dejará los programas, y instala subliminal aislado en su propia carpeta. No hace falta instalar Python aparte: pipx lo trae como dependencia y apt lo instala solo si falta. Después **cierra y vuelve a abrir la ventana de Ubuntu**. La primera vez que uses `-t`, orgie te preguntará si quieres iniciar sesión con tu cuenta de OpenSubtitles; el README explica qué se guarda y dónde. Para quitar subliminal: `pipx uninstall subliminal`.
 
 ## Actualizar y desinstalar
 
@@ -166,6 +167,18 @@ Qué hace cada línea: instala pipx, le dice a Ubuntu dónde dejará los program
 orgie --update        # busca una versión nueva y pregunta antes de instalarla
 orgie --uninstall     # quita orgie, y también la sesión y la caché si las hubiera
 ```
+
+## Si algo falla
+
+**`sudo apt install pipx` da error (por ejemplo `Unable to locate package pipx`).** Suele ser una de estas tres:
+
+1. Falta actualizar la lista de programas. En una instalación nueva de Ubuntu está vacía, así que ejecuta `sudo apt update` y repite el comando.
+2. El Ubuntu es demasiado viejo. Mira cuál tienes con `cat /etc/os-release`. pipx está disponible desde Ubuntu 22.04 y subliminal necesita Python 3.10 o más, así que con Ubuntu 20.04 no funciona. La solución es instalar uno nuevo desde PowerShell (no desde Ubuntu): `wsl --install -d Ubuntu-24.04`. Cada Linux de WSL es independiente, así que en el nuevo hay que repetir los pasos 2 a 4. Con `wsl -l -v` ves los que tienes instalados.
+3. Ubuntu no tiene internet. Si `sudo apt update` termina con errores del tipo `Temporary failure resolving`, el problema es la red de WSL y no orgie. Reiniciar WSL (`wsl --shutdown` en PowerShell y abrir Ubuntu de nuevo) suele arreglarlo.
+
+Si sigue sin funcionar, copia el texto completo del error (no hace falta captura) para poder verlo.
+
+**`orgie -t` dice "límite diario de descargas alcanzado".** OpenSubtitles limita cuántos subtítulos se pueden bajar por día. No es un problema de tu contraseña ni de la instalación, y orgie sigue con las otras fuentes mientras tanto.
 
 ## Al terminar deberías tener
 

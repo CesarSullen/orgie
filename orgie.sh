@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-VERSION="0.7.0"
+VERSION="0.7.2"
 INSTALL_DIR="$HOME/.local/bin"
 INSTALL_PATH="$INSTALL_DIR/orgie"
 REPO_RAW_URL="https://raw.githubusercontent.com/CesarSullen/orgie/main/orgie.sh"
@@ -777,7 +777,7 @@ run_stage() {
 # try_stage <sitios> <video>
 # Devuelve 0 si se descargó un subtítulo. En STAGE_NOTE queda el resultado.
 try_stage() {
-    local base="${2%.*}" before after bad_sites reason
+    local base="${2%.*}" before after bad_sites reason reset
 
     before="$(subs_count "$base")"
     run_stage "$1" "$2"
@@ -785,22 +785,27 @@ try_stage() {
 
     STAGE_AUTH_FAIL=0
     STAGE_LIMIT=0
+    STAGE_AGENT=0
 
     if [[ $after -gt $before ]]; then
         STAGE_NOTE="descargado"
         return 0
     fi
 
-    # Nombres de error tal como los muestra subliminal al hablar con OpenSubtitles
+    # Nombres de error tal como los muestra subliminal al hablar con OpenSubtitles.
+    # Ojo: OpenSubtitles contesta "406" cuando se pasa el límite diario de
+    # descargas, y subliminal lo llama NoSession aunque la contraseña esté bien.
     if [[ "$STAGE_OUT" == *UnknownUserAgent* || "$STAGE_OUT" == *DisabledUserAgent* ]]; then
         STAGE_NOTE="OpenSubtitles no acepta a subliminal (no es problema de tu cuenta)"
+        STAGE_AGENT=1
+    elif [[ "$STAGE_OUT" == *NoSession* || "$STAGE_OUT" == *DownloadLimitReached* || "$STAGE_OUT" == *DownloadLimitExceeded* ]]; then
+        reset="$(printf '%s\n' "$STAGE_OUT" | sed -n 's/.*quota reset on \(.*\) UTC.*/\1/p' | tail -n 1)"
+        STAGE_NOTE="límite diario de descargas alcanzado"
+        [[ -n "$reset" ]] && STAGE_NOTE="$STAGE_NOTE (se renueva: $reset UTC)"
         STAGE_LIMIT=1
-    elif [[ "$STAGE_OUT" == *Unauthorized* || "$STAGE_OUT" == *NoSession* || "$STAGE_OUT" == *AuthenticationError* ]]; then
+    elif [[ "$STAGE_OUT" == *Unauthorized* || "$STAGE_OUT" == *AuthenticationError* ]]; then
         STAGE_NOTE="usuario o contraseña rechazados"
         STAGE_AUTH_FAIL=1
-    elif [[ "$STAGE_OUT" == *DownloadLimitReached* || "$STAGE_OUT" == *DownloadLimitExceeded* ]]; then
-        STAGE_NOTE="límite diario de descargas alcanzado"
-        STAGE_LIMIT=1
     else
         bad_sites="$(printf '%s\n' "$STAGE_OUT" \
             | sed -n -E 's/^ERROR:subliminal\.utils:.*[Pp]rovider ([A-Za-z0-9_]+)$/\1/p' \
@@ -854,8 +859,9 @@ mode_subs() {
         echo "Instálalo una vez, sin sudo, con:" >&2
         echo "  pipx install subliminal" >&2
         echo "Si no tienes pipx:" >&2
-        echo "  sudo apt install pipx        (Debian/Ubuntu/Kubuntu)" >&2
-        echo "  sudo pacman -S python-pipx   (Arch/Omarchy)" >&2
+        echo "  sudo apt update && sudo apt install pipx   (Ubuntu 22.04 o más nuevo, Debian, Kubuntu)" >&2
+        echo "  sudo pacman -S python-pipx                 (Arch/Omarchy)" >&2
+        echo "Si apt sigue sin encontrar pipx, tu Ubuntu es demasiado viejo (hace falta 22.04 o más nuevo)." >&2
         exit 1
     fi
 
@@ -996,7 +1002,7 @@ EOF
             echo "$STAGE_NOTE"
 
             if [[ "${stages[s]}" == "opensubtitlescom" ]]; then
-                if [[ $STAGE_LIMIT -eq 1 ]]; then
+                if [[ $STAGE_LIMIT -eq 1 || $STAGE_AGENT -eq 1 ]]; then
                     skip_os=1
                 elif [[ $STAGE_AUTH_FAIL -eq 1 ]]; then
                     skip_os=1
@@ -1012,7 +1018,7 @@ EOF
                                 break
                             fi
                             echo "$STAGE_NOTE"
-                            [[ $STAGE_AUTH_FAIL -eq 1 || $STAGE_LIMIT -eq 1 ]] && skip_os=1
+                            [[ $STAGE_AUTH_FAIL -eq 1 || $STAGE_LIMIT -eq 1 || $STAGE_AGENT -eq 1 ]] && skip_os=1
                         fi
                     fi
                 fi

@@ -192,7 +192,7 @@ Para buscar usa [subliminal](https://github.com/Diaoul/subliminal), que se insta
 pipx install subliminal
 ```
 
-Si no tienes pipx: `sudo apt install pipx` (Debian, Ubuntu) o `sudo pacman -S python-pipx` (Arch). Para quitarlo: `pipx uninstall subliminal`. orgie nunca lo instala por su cuenta.
+Si no tienes pipx: `sudo apt update && sudo apt install pipx` (Ubuntu 22.04 o más nuevo, Debian) o `sudo pacman -S python-pipx` (Arch). El `apt update` es importante en una instalación nueva, porque sin él apt no encuentra el paquete. subliminal necesita Python 3.10 o más, que en Ubuntu significa 22.04 o posterior; pipx instala Python por su cuenta si falta. Para quitarlo: `pipx uninstall subliminal`. orgie nunca lo instala por su cuenta.
 
 ### Dónde busca
 
@@ -210,7 +210,7 @@ La primera vez que uses `-t`, orgie pregunta si quieres iniciar sesión. Si dice
 
 - Tu usuario y contraseña solo los recibe OpenSubtitles, que los necesita para funcionar. orgie no los manda a ningún otro sitio y yo no recibo nada.
 - Se guardan en texto normal en `~/.config/orgie/opensubtitles.toml`. La carpeta y el archivo solo los puede leer tu usuario, y la contraseña nunca se pasa por la línea de comandos. Aun así, no uses ahí una contraseña que repitas en otros sitios.
-- Las cuentas gratuitas tienen un límite diario de descargas. Si lo alcanzas, orgie lo dice y sigue con las otras fuentes.
+- OpenSubtitles pone un límite de descargas por día, también en las cuentas gratuitas. Si lo alcanzas, orgie lo dice ("límite diario de descargas alcanzado"), deja de usar OpenSubtitles en esa ejecución y sigue con las otras fuentes. No lo confundas con "usuario o contraseña rechazados", que solo sale cuando OpenSubtitles de verdad no acepta tus datos.
 - Si la contraseña guardada deja de funcionar, te ofrece escribirla de nuevo.
 - Para cerrar sesión basta con borrar las carpetas de orgie: `rm -r ~/.config/orgie ~/.cache/orgie`. `orgie --uninstall` también las quita.
 
