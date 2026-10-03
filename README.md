@@ -1,11 +1,14 @@
 # orgie
 
-Un solo script de Bash para tres cosas que hago a mano todo el tiempo: ordenar descargas de juegos de Switch, numerar capítulos de series y bajar subtítulos. Se elige qué hacer con una flag.
+Un solo script de Bash para cosas que hago a mano todo el tiempo con descargas: ordenar juegos de Switch, numerar capítulos de series, repartirlos en temporadas, bajar subtítulos y quitar duplicados. Se elige qué hacer con una flag.
 
 ```bash
-orgie -g carpeta     # juegos de Switch
-orgie -s carpeta     # numerar capítulos
-orgie -t carpeta     # subtítulos
+orgie -g carpeta          # juegos de Switch
+orgie -s carpeta          # numerar capítulos
+orgie -p 24,12 carpeta    # repartir en temporadas
+orgie -t carpeta          # subtítulos
+orgie -d carpeta          # duplicados
+orgie --update            # actualizar orgie
 ```
 
 Si no pones carpeta usa la actual. Si no pones ninguna flag, muestra la ayuda y no toca nada.
@@ -42,7 +45,13 @@ Al terminar te dice si `~/.local/bin` está en tu `PATH`. Si no, te da la línea
 orgie --help
 ```
 
-Para actualizar, vuelve a correr el comando de instalación; si la versión cambió, pregunta antes de reemplazar.
+Para actualizar:
+
+```bash
+orgie --update
+```
+
+Mira la versión publicada en GitHub, la compara con la que tienes instalada y, si hay una más nueva, te lo dice y pregunta antes de reemplazarla. Comprueba que lo descargado sea de verdad orgie y que no esté roto, y no ejecuta nada de lo que baja. Es lo único, además de `-t`, que entra a internet, y solo a GitHub.
 
 Para desinstalar:
 
@@ -61,6 +70,9 @@ orgie -g .                     # juegos: organiza los .rar/.zip de la carpeta ac
 orgie -g ~/Downloads/Games     # juegos: en otra carpeta
 orgie -s .                     # series: numera los videos de la carpeta actual
 orgie -s -n 36 .               # series: empieza en 036
+orgie -p 24,12,13 .            # temporadas: T1 con 24 capítulos, T2 con 12 y T3 con 13
+orgie -d ~/Downloads           # duplicados: busca archivos idénticos en esa carpeta
+orgie --update                 # actualizar orgie
 orgie -t .                     # subtítulos: para los videos de la carpeta actual
 orgie -t ~/Peliculas/Mi.mkv    # subtítulos: para una sola película
 orgie -t -l en .               # subtítulos: en inglés
@@ -69,7 +81,9 @@ orgie -v                       # versión
 
 ## Juegos (`-g`)
 
-Pensado para juegos de Switch en `.rar` o `.zip` (base más update o DLC). Para cada archivo saca el nombre del juego, lo descomprime en su carpeta, y si el juego ya tiene carpeta mete ahí el update. Si la extracción deja una sola subcarpeta, sube el contenido un nivel. Al final genera un `README.md` con lo que pesa cada juego, de mayor a menor, y pregunta si quieres borrar los archivos que se extrajeron bien. Los que fallan se quedan como estaban.
+Pensado para juegos de Switch en `.rar` o `.zip` (base más update o DLC). Primero enseña el plan: qué archivo va a qué carpeta, si la carpeta es nueva o ya existe, y cuáles se omiten porque no se reconoce el nombre. Hasta que no confirmas no toca nada.
+
+Después, para cada archivo, lo descomprime en la carpeta de su juego (si ya existe, mete ahí el update) y, si la extracción deja una sola subcarpeta, sube el contenido un nivel. Al terminar pregunta si quieres generar un `README.md` con lo que pesa cada juego, de mayor a menor (si ya hay uno, avisa de que lo reemplazaría), y por último si quieres borrar los archivos que se extrajeron bien. Los que fallan se quedan como estaban.
 
 El nombre del juego sale de lo que va antes de la palabra "Switch" en el archivo, con los guiones convertidos en espacios:
 
@@ -88,9 +102,9 @@ sudo apt install p7zip-full    # ambos
 
 ## Series (`-s`)
 
-Ordena los videos de una carpeta por su fecha de creación en el disco y los renombra `01.mp4`, `02.mp4`... o `001.mp4`, `002.mp4`... según cuántos sean (si el último número pasa de 99, usa tres cifras). Conserva la extensión y deja los demás archivos como están.
+Ordena los videos de una carpeta por su fecha de creación en el disco y los renombra `01.mp4`, `02.mp4`... o `001.mp4`, `002.mp4`... según cuántos sean (si el último número pasa de 99, usa tres cifras). Conserva la extensión y deja los demás archivos como están, salvo los subtítulos (`.srt`, `.ass`, `.ssa`, `.sub`, `.vtt`) que tengan el mismo nombre que un video: esos cambian de nombre con él, para que el reproductor los siga encontrando solo. Por ejemplo, `video_xxx.mp4` y `video_xxx.es.srt` pasan a `036.mp4` y `036.es.srt`.
 
-Antes de renombrar enseña los primeros y los últimos y pregunta. **No se puede deshacer**, así que mira esa vista previa.
+Antes de renombrar enseña los primeros y los últimos (y cuántos subtítulos se renombrarán con ellos) y pregunta. **No se puede deshacer**, así que mira esa vista previa.
 
 La fecha de creación es el momento en que el archivo apareció en tu disco, o sea cuando empezó a descargarse, y no cambia después. Si descargas desde Telegram, dale a descargar en el orden correcto y el resultado respeta ese orden aunque las descargas terminen desordenadas. La fecha de modificación no sirve para esto porque cambia cuando termina cada descarga.
 
@@ -98,12 +112,30 @@ Ojo: si copias los archivos a otra carpeta o disco, la copia recibe una fecha de
 
 Opciones:
 
-| Opción                    | Qué hace                                                   |
-| ------------------------- | ---------------------------------------------------------- |
-| `-n N`, `--start N`       | Número inicial (por defecto 1). `-n 36` da `036`, `037`... |
-| `-e LISTA`, `--ext LISTA` | Extensiones a procesar, separadas por comas y sin punto    |
+| Opción | Qué hace |
+|---|---|
+| `-n N`, `--start N` | Número inicial (por defecto 1). `-n 36` da `036`, `037`... |
+| `-e LISTA`, `--ext LISTA` | Extensiones a procesar, separadas por comas y sin punto |
 
 Por defecto procesa `mp4, mkv, avi, mov, webm, m4v, ts, flv, wmv`. Si dos archivos tienen exactamente la misma fecha, los ordena por nombre y te avisa. Si tu sistema de archivos no guarda la fecha de creación, se detiene sin cambiar nada.
+
+## Temporadas (`-p`)
+
+Reparte los videos de una carpeta en subcarpetas `T1`, `T2`... según los capítulos que tiene cada temporada. Los videos se toman por orden de nombre (con orden natural: `2` va antes que `10`).
+
+```bash
+orgie -p 24,12,13 .
+```
+
+Con eso, los primeros 24 videos van a `T1`, los siguientes 12 a `T2` y los últimos 13 a `T3`. Los archivos no se renombran. Los subtítulos con el mismo nombre que un video (`03.mp4` y `03.es.srt`) se mueven con él.
+
+La suma de la lista tiene que coincidir con el número de videos de la carpeta; si no, se detiene sin tocar nada (con `-e` puedes limitar las extensiones). Tampoco sigue si ya existe alguna carpeta `T1`, `T2`... que vaya a crear. Enseña la vista previa y pide confirmación antes de mover.
+
+## Duplicados (`-d`)
+
+Busca archivos idénticos en la carpeta (sin entrar en subcarpetas), pensado para esos `video (2).mp4` que deja Telegram cuando descargas dos veces lo mismo. Compara primero el tamaño, luego el principio y el final de cada archivo y, solo si siguen coincidiendo, el contenido completo, así que dos archivos solo cuentan como duplicados si son iguales byte a byte. Con archivos grandes puede tardar un poco.
+
+De cada grupo conserva el más antiguo (si empatan, el de nombre más corto) y te enseña qué se conserva y qué se borraría. Pide confirmación antes de borrar y **no se puede deshacer**.
 
 ## Subtítulos (`-t`)
 
@@ -150,21 +182,25 @@ Los sitios de arriba ven tu IP y lo que se busca (el nombre del archivo y una hu
 
 ### Opciones
 
-| Opción                       | Qué hace                                           |
-| ---------------------------- | -------------------------------------------------- |
+| Opción | Qué hace |
+|---|---|
 | `-l CÓDIGO`, `--lang CÓDIGO` | Idioma (por defecto `es`). Ejemplos: `en`, `pt-BR` |
-| `-e LISTA`, `--ext LISTA`    | Extensiones a procesar cuando le pasas una carpeta |
+| `-e LISTA`, `--ext LISTA` | Extensiones a procesar cuando le pasas una carpeta |
 
 ## Requisitos
 
-Bash y el `stat` de GNU, que ya vienen en cualquier distro Linux. Para `-g`, una herramienta de extracción (arriba). Para `-t`, subliminal.
+Bash y las herramientas de GNU (`stat`, `sha256sum`, `numfmt`), que ya vienen en cualquier distro Linux. Para `-g`, una herramienta de extracción (arriba). Para `-t`, subliminal. Para `--update`, `curl`.
+
+## Windows
+
+orgie es un script de Bash, así que en Windows se usa a través de WSL, que instala Ubuntu dentro de Windows y deja trabajar sobre tus carpetas de siempre. Los pasos, uno por uno, están en [WINDOWS.md](./WINDOWS.md).
 
 ## Seguridad
 
-- Nunca renombra ni borra nada sin preguntar. `-t` es la excepción porque solo agrega archivos.
+- Nunca renombra, mueve ni borra nada sin enseñar antes lo que va a hacer y preguntar. `-t` es la excepción porque solo agrega archivos.
 - `-s` no pisa archivos: si un nombre nuevo choca con uno que no es del lote, se detiene sin cambiar nada. Si se interrumpe a medias pueden quedar archivos `.orgie.tmp.N`; son tus videos con nombre temporal y orgie no seguirá hasta que los revises.
 - `-g` solo borra los archivos que extrajo bien en esa ejecución y solo si lo confirmas.
-- No usa `sudo` ni abre puertos. Solo `-t` entra a internet.
+- No usa `sudo` ni abre puertos. Solo `-t` y `--update` entran a internet.
 
 ## Licencia
 

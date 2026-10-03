@@ -4,9 +4,11 @@
 
 set -uo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.1"
 INSTALL_DIR="$HOME/.local/bin"
 INSTALL_PATH="$INSTALL_DIR/orgie"
+REPO_RAW_URL="https://raw.githubusercontent.com/CesarSullen/orgie/main/orgie.sh"
+SUB_EXTS="srt ass ssa sub vtt"
 
 # Archivos que orgie guarda en el modo -t (sesión de OpenSubtitles y caché)
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/orgie"
@@ -30,41 +32,51 @@ Uso: orgie <modo> [opciones] [carpeta]
 Si no indicas carpeta se usa la actual (.).
 
 Modos (hay que elegir uno):
-  -g, --games      Descomprime juegos de Nintendo Switch (.rar/.zip), crea una
-                   carpeta por juego y genera un README.md con los tamaños.
-  -s, --series     Renombra los videos con números (01, 02... o 001, 002...)
-                   según su fecha de creación en el disco, y conserva la
-                   extensión. Enseña una vista previa y pide confirmación.
-                   No se puede deshacer.
-  -t, --subs       Descarga subtítulos (en español por defecto) de un video o
-                   de todos los de una carpeta, y los guarda al lado con el
-                   mismo nombre (Pelicula.es.srt). Necesita 'subliminal'.
-  --install        Copia orgie a ~/.local/bin/orgie para usarlo desde cualquier
-                   carpeta. No usa sudo.
-  --uninstall      Quita orgie y lo que haya guardado (sesión y caché).
+  -g, --games        Descomprime juegos de Nintendo Switch (.rar/.zip) en una
+                     carpeta por juego. Enseña el plan y pide confirmación; el
+                     README.md con los tamaños es opcional.
+  -s, --series       Renombra los videos con números (01, 02... o 001, 002...)
+                     según su fecha de creación en el disco, y conserva la
+                     extensión. Los subtítulos con el mismo nombre que un video
+                     se renombran con él. Enseña una vista previa y pide
+                     confirmación. No se puede deshacer.
+  -t, --subs         Descarga subtítulos (en español por defecto) de un video o
+                     de todos los de una carpeta, y los guarda al lado con el
+                     mismo nombre (Pelicula.es.srt). Necesita 'subliminal'.
+  -p, --split LISTA  Reparte los videos, en orden de nombre, en carpetas T1, T2...
+                     según los capítulos de cada temporada. Ej: -p 24,12,13.
+                     Los subtítulos viajan con su video. Pide confirmación.
+  -d, --dupes        Busca archivos idénticos en la carpeta y ofrece borrar las
+                     copias, conservando el más antiguo. No se puede deshacer.
+  --update           Mira si hay una versión nueva en GitHub y, si la hay, la
+                     instala tras confirmar.
+  --install          Copia orgie a ~/.local/bin/orgie para usarlo desde cualquier
+                     carpeta. No usa sudo.
+  --uninstall        Quita orgie y lo que haya guardado (sesión y caché).
 
 Opciones de --series:
-  -n, --start N    Número inicial (por defecto 1). Con -n 36 sale 036, 037...
+  -n, --start N      Número inicial (por defecto 1). Con -n 36 sale 036, 037...
 
 Opciones de --subs:
-  -l, --lang COD   Idioma (por defecto es). Ejemplos: en, pt-BR.
+  -l, --lang COD     Idioma (por defecto es). Ejemplos: en, pt-BR.
 
-Opciones de --series y --subs:
-  -e, --ext LISTA  Extensiones a procesar, separadas por comas y sin punto.
-                   Por defecto: mp4,mkv,avi,mov,webm,m4v,ts,flv,wmv
+Opciones de --series, --subs y --split:
+  -e, --ext LISTA    Extensiones a procesar, separadas por comas y sin punto.
+                     Por defecto: mp4,mkv,avi,mov,webm,m4v,ts,flv,wmv
 
 Generales:
-  -h, --help       Muestra esta ayuda.
-  -v, --version    Muestra la versión.
+  -h, --help         Muestra esta ayuda.
+  -v, --version      Muestra la versión.
 
 Ejemplos:
   orgie -g ~/Games
   orgie -s .
   orgie -s -n 36 -e mkv ~/Series/Temporada1
+  orgie -p 24,12,13 ~/Series/MiSerie
+  orgie -d ~/Downloads
   orgie -t ~/Peliculas/MiPelicula.mkv
-  orgie -t ~/Peliculas
+  orgie --update
   bash orgie.sh --install
-  orgie --uninstall
 EOF
 }
 
@@ -153,6 +165,16 @@ find_existing_folder() {
     return 1
 }
 
+# game_name_from <archivo>: saca el nombre del juego del nombre del archivo.
+# Devuelve vacío si no lo reconoce.
+game_name_from() {
+    local noext normalized name
+    noext="${1%.*}"
+    normalized="${noext//-/ }"
+    name="$(printf '%s\n' "$normalized" | sed -E 's/[[:space:]]+[Ss][Ww][A-Za-z]{0,3}[Cc][Hh].*$//')"
+    printf '%s\n' "$name" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
 mode_games() {
     banner "Organizador de juegos Nintendo Switch"
 
@@ -183,22 +205,59 @@ mode_games() {
     echo "      Disponibles: $( [[ $HAVE_UNRAR -eq 1 ]] && echo -n 'unrar ' )$( [[ $HAVE_UNZIP -eq 1 ]] && echo -n 'unzip ' )$( [[ $HAVE_7Z -eq 1 ]] && echo -n '7z' )"
     echo ""
 
-    # --- 3. Procesar cada archivo ---
-    echo "[3/5] Procesando archivos..."
-    echo ""
-
     local archive_files=("$TARGET_DIR"/*.rar "$TARGET_DIR"/*.zip)
     local extracted_files=()
     local failed_files=()
+    local confirm
+
+    # --- 3. Plan y confirmación ---
+    echo "[3/5] Plan (todavía no se ha tocado nada)..."
+    echo ""
 
     if [[ ${#archive_files[@]} -eq 0 ]]; then
         echo "      No se encontraron archivos .rar/.zip en '$TARGET_DIR'."
         echo "      Se omite la extracción."
         echo ""
     else
+        local plan_file plan_name plan_game plan_existing
+        local -A planned=()
+        for plan_file in "${archive_files[@]}"; do
+            plan_name="$(basename "$plan_file")"
+            plan_game="$(game_name_from "$plan_name")"
+            echo "      $plan_name"
+            if [[ -z "$plan_game" ]]; then
+                echo "        -> se omite (no se reconoce el nombre del juego)"
+                continue
+            fi
+            plan_existing="$(find_existing_folder "$plan_game" "$TARGET_DIR" || true)"
+            if [[ -n "$plan_existing" ]]; then
+                echo "        -> $plan_existing/  (ya existe, se añade ahí)"
+            elif [[ -n "${planned[${plan_game,,}]:-}" ]]; then
+                echo "        -> ${planned[${plan_game,,}]}/  (misma carpeta que un archivo anterior)"
+            else
+                planned["${plan_game,,}"]="$plan_game"
+                echo "        -> $plan_game/  (carpeta nueva)"
+            fi
+        done
+        echo ""
+
+        read -r -p "¿Descomprimir estos ${#archive_files[@]} archivos? (s/n): " confirm
+        if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
+            echo ""
+            echo "No se cambió nada."
+            return 0
+        fi
+        echo ""
+    fi
+
+    # --- 4. Procesar cada archivo ---
+    echo "[4/5] Procesando archivos..."
+    echo ""
+
+    if [[ ${#archive_files[@]} -gt 0 ]]; then
         local total_files=${#archive_files[@]}
         local current_file=0
-        local archive_file filename filename_noext normalized game_name
+        local archive_file filename filename_noext game_name
         local existing_name dest_dir extracted_dirs inner_dir inner_entries inner_name
 
         for archive_file in "${archive_files[@]}"; do
@@ -211,12 +270,7 @@ mode_games() {
             echo "  [$current_file/$total_files] $filename_noext"
             echo "----------------------------------------"
 
-            # Sustituir guiones por espacios
-            normalized="${filename_noext//-/ }"
-
-            # Cortar todo desde la palabra "Switch" en adelante
-            game_name="$(echo "$normalized" | sed -E 's/[[:space:]]+[Ss][Ww][A-Za-z]{0,3}[Cc][Hh].*$//')"
-            game_name="$(echo "$game_name" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+            game_name="$(game_name_from "$filename")"
 
             if [[ -z "$game_name" ]]; then
                 echo "      Aviso: no se pudo determinar el nombre del juego."
@@ -282,48 +336,54 @@ mode_games() {
         done
     fi
 
-    # --- 4. README.md con tamaños ---
-    echo "[4/5] Generando README.md..."
-
-    local readme_path="$TARGET_DIR/README.md"
-
-    {
-        echo "# Juegos"
-        echo ""
-        echo "Actualizado: $(date '+%Y-%m-%d %H:%M')"
-        echo ""
-        echo "| Juego | Tamaño |"
-        echo "|---|---|"
-    } > "$readme_path"
-
-    local game_dirs=("$TARGET_DIR"/*/)
-
-    if [[ ${#game_dirs[@]} -eq 0 ]]; then
-        echo "| (sin carpetas de juegos todavía) | - |" >> "$readme_path"
-    else
-        local size dir name total_size
-        while IFS=$'\t' read -r size dir; do
-            name="$(basename "$dir")"
-            printf '| %s | %s |\n' "$name" "$size" >> "$readme_path"
-        done < <(du -sh "${game_dirs[@]}" | sort -rh)
-
-        total_size="$(du -shc "${game_dirs[@]}" 2>/dev/null | tail -1 | cut -f1)"
-        {
-            echo "|---|---|"
-            echo "| **Total** | **$total_size** |"
-        } >> "$readme_path"
-    fi
-
-    echo "      README.md generado correctamente."
+    # --- 5. README opcional y resumen ---
+    echo "[5/5] README y resumen"
     echo ""
 
-    # --- 5. Resumen ---
-    echo "[5/5] Resumen"
+    local readme_path="$TARGET_DIR/README.md"
+    local readme_state="omitido"
+    local readme_note=""
+    [[ -e "$readme_path" ]] && readme_note=" (ya existe uno y se reemplazaría)"
+
+    read -r -p "¿Generar README.md con el tamaño de cada juego?$readme_note (s/n): " confirm
+    echo ""
+
+    if [[ "$confirm" == "s" || "$confirm" == "S" ]]; then
+        {
+            echo "# Juegos"
+            echo ""
+            echo "Actualizado: $(date '+%Y-%m-%d %H:%M')"
+            echo ""
+            echo "| Juego | Tamaño |"
+            echo "|---|---|"
+        } > "$readme_path"
+
+        local game_dirs=("$TARGET_DIR"/*/)
+
+        if [[ ${#game_dirs[@]} -eq 0 ]]; then
+            echo "| (sin carpetas de juegos todavía) | - |" >> "$readme_path"
+        else
+            local size dir name total_size
+            while IFS=$'\t' read -r size dir; do
+                name="$(basename "$dir")"
+                printf '| %s | %s |\n' "$name" "$size" >> "$readme_path"
+            done < <(du -sh "${game_dirs[@]}" | sort -rh)
+
+            total_size="$(du -shc "${game_dirs[@]}" 2>/dev/null | tail -1 | cut -f1)"
+            {
+                echo "|---|---|"
+                echo "| **Total** | **$total_size** |"
+            } >> "$readme_path"
+        fi
+        readme_state="generado en $readme_path"
+    fi
+
     banner "Proceso terminado"
 
     echo "  Archivos encontrados:  ${#archive_files[@]}"
     echo "  Extraídos con éxito:   ${#extracted_files[@]}"
     echo "  Fallidos:              ${#failed_files[@]}"
+    echo "  README:                $readme_state"
 
     if [[ ${#failed_files[@]} -gt 0 ]]; then
         echo ""
@@ -333,14 +393,10 @@ mode_games() {
             echo "    - $f"
         done
     fi
-
-    echo ""
-    echo "  Revisa: $readme_path"
     echo ""
 
     # --- Preguntar si se borran los archivos ya extraídos con éxito ---
     if [[ ${#extracted_files[@]} -gt 0 ]]; then
-        local confirm
         read -r -p "¿Eliminar los ${#extracted_files[@]} archivos ya extraídos con éxito? (s/n): " confirm
 
         if [[ "$confirm" == "s" || "$confirm" == "S" ]]; then
@@ -508,8 +564,26 @@ mode_series() {
         prev_birth="$birth"
     done
 
+    # Los subtítulos que acompañan a cada video (Nombre.es.srt) se renombran igual
+    local SUB_SRC=() SUB_DST=() i new_base sub rest
+    local -A sub_claimed=()
+    for ((i = 0; i < total; i++)); do
+        new_base="${DST[i]%.*}"
+        while IFS= read -r sub; do
+            [[ -n "$sub" ]] || continue
+            sub="${sub##*/}"
+            [[ -z "${sub_claimed[$sub]:-}" && -z "${in_src[$sub]:-}" ]] || continue
+            rest="${sub#"${SRC[i]%.*}".}"
+            sub_claimed["$sub"]=1
+            in_src["$sub"]=1
+            SUB_SRC+=("$sub")
+            SUB_DST+=("$new_base.$rest")
+        done < <(subtitle_companions "$TARGET_DIR/${SRC[i]%.*}")
+    done
+
     echo "      Videos encontrados: $total"
     echo "      Numeración: de ${DST[0]%.*} a ${DST[$((total - 1))]%.*} ($width cifras)"
+    [[ ${#SUB_SRC[@]} -gt 0 ]] && echo "      Subtítulos que se renombrarán con sus videos: ${#SUB_SRC[@]}"
     [[ $skipped -gt 0 ]] && echo "      Omitidos por nombre raro: $skipped"
     if [[ $ties -gt 0 ]]; then
         echo "      Aviso: $ties archivos tienen exactamente la misma fecha de creación que otro;"
@@ -518,10 +592,10 @@ mode_series() {
     echo ""
 
     # Un nombre nuevo no puede pisar un archivo que no sea del lote.
-    local conflicts=0 i
-    for i in "${!DST[@]}"; do
-        if [[ -e "$TARGET_DIR/${DST[i]}" && -z "${in_src[${DST[i]}]:-}" ]]; then
-            echo "Error: ya existe '${DST[i]}' y no es uno de los videos a renombrar." >&2
+    local conflicts=0 dest
+    for dest in "${DST[@]}" "${SUB_DST[@]}"; do
+        if [[ -e "$TARGET_DIR/$dest" && -z "${in_src[$dest]:-}" ]]; then
+            echo "Error: ya existe '$dest' y no es uno de los archivos a renombrar." >&2
             conflicts=$((conflicts + 1))
         fi
     done
@@ -541,10 +615,16 @@ mode_series() {
         echo "      ..."
         for ((i = total - 3; i < total; i++)); do print_series_line "$i"; done
     fi
+    if [[ ${#SUB_SRC[@]} -gt 0 ]]; then
+        echo ""
+        echo "      Además, ${#SUB_SRC[@]} subtítulos cambian de nombre para seguir a su video, por ejemplo:"
+        echo "      ${SUB_DST[0]}  <-  ${SUB_SRC[0]}"
+    fi
     echo ""
 
-    local confirm
-    read -r -p "¿Renombrar los $total archivos? Esto no se puede deshacer. (s/n): " confirm
+    local confirm sub_text=""
+    [[ ${#SUB_SRC[@]} -gt 0 ]] && sub_text=" y ${#SUB_SRC[@]} subtítulos"
+    read -r -p "¿Renombrar los $total videos$sub_text? Esto no se puede deshacer. (s/n): " confirm
     if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
         echo ""
         echo "No se cambió nada."
@@ -556,6 +636,10 @@ mode_series() {
     echo "[5/5] Renombrando..."
 
     local status=0
+    if [[ ${#SUB_SRC[@]} -gt 0 ]]; then
+        SRC+=("${SUB_SRC[@]}")
+        DST+=("${SUB_DST[@]}")
+    fi
     if apply_renames; then
         echo "      Renombrado completado."
     else
@@ -565,6 +649,7 @@ mode_series() {
 
     banner "Proceso terminado"
     echo "  Videos renombrados: $total"
+    [[ ${#SUB_SRC[@]} -gt 0 ]] && echo "  Subtítulos renombrados: ${#SUB_SRC[@]}"
     echo "  Primero: ${DST[0]}   Último: ${DST[$((total - 1))]}"
     echo ""
 
@@ -646,7 +731,7 @@ run_stage() {
 # try_stage <sitios> <video>
 # Devuelve 0 si se descargó un subtítulo. En STAGE_NOTE queda el resultado.
 try_stage() {
-    local base="${2%.*}" before after bad_sites
+    local base="${2%.*}" before after bad_sites reason
 
     before="$(subs_count "$base")"
     run_stage "$1" "$2"
@@ -677,6 +762,11 @@ try_stage() {
         bad_sites="${bad_sites% }"
         if [[ -n "$bad_sites" ]]; then
             STAGE_NOTE="no se pudo consultar (${bad_sites// /, })"
+            # Última línea de error que dejó subliminal, para saber el motivo real
+            reason="$(printf '%s\n' "$STAGE_OUT" \
+                | grep -E '^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+: ' \
+                | tail -n 1 | sed -E 's/^([A-Za-z0-9_]+\.)+//' | cut -c1-110)"
+            [[ -n "$reason" ]] && STAGE_NOTE="$STAGE_NOTE: $reason"
         elif [[ $STAGE_RC -ne 0 ]]; then
             STAGE_NOTE="error de subliminal"
         else
@@ -1032,6 +1122,379 @@ mode_uninstall() {
 }
 
 # ============================================================
+#  Modo --split
+# ============================================================
+
+# subtitle_companions <ruta sin extensión>: subtítulos que acompañan a un video
+subtitle_companions() {
+    local base="$1" f ext
+    for f in "$base".*; do
+        [[ -f "$f" ]] || continue
+        ext="${f##*.}"
+        ext="${ext,,}"
+        case " $SUB_EXTS " in
+            *" $ext "*) echo "$f" ;;
+        esac
+    done
+}
+
+mode_split() {
+    banner "Partir en temporadas"
+
+    if ! [[ "$SPLIT_LIST" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+        echo "Error: la lista debe ser números separados por comas, por ejemplo: -p 24,12,13" >&2
+        exit 1
+    fi
+
+    local parts=() raw n sum=0
+    IFS=',' read -r -a raw <<< "$SPLIT_LIST"
+    for n in "${raw[@]}"; do
+        n=$((10#$n))
+        if [[ $n -lt 1 ]]; then
+            echo "Error: cada temporada debe tener al menos 1 capítulo." >&2
+            exit 1
+        fi
+        parts+=("$n")
+        sum=$((sum + n))
+    done
+
+    # --- 1. Carpeta ---
+    echo "[1/4] Comprobando carpeta de trabajo..."
+    resolve_target
+
+    # --- 2. Buscar videos ---
+    echo "[2/4] Buscando videos..."
+
+    local -A allowed=()
+    local ext_list e f name ext
+    IFS=',' read -r -a ext_list <<< "$EXTS"
+    for e in "${ext_list[@]}"; do
+        e="${e#.}"
+        e="${e,,}"
+        [[ -n "$e" ]] && allowed["$e"]=1
+    done
+
+    local found=()
+    for f in "$TARGET_DIR"/*; do
+        [[ -f "$f" && ! -L "$f" ]] || continue
+        name="${f##*/}"
+        [[ "$name" == *.* ]] || continue
+        [[ "$name" == *$'\n'* ]] && continue
+        ext="${name##*.}"
+        ext="${ext,,}"
+        [[ -n "${allowed[$ext]:-}" ]] || continue
+        found+=("$name")
+    done
+
+    local total=${#found[@]}
+
+    if [[ $total -eq 0 ]]; then
+        echo "      No se encontraron videos (extensiones: $EXTS) en '$TARGET_DIR'."
+        echo ""
+        return 0
+    fi
+
+    local videos
+    mapfile -t videos < <(printf '%s\n' "${found[@]}" | LC_ALL=C sort -V)
+
+    echo "      Videos encontrados: $total"
+    echo ""
+
+    if [[ $total -ne $sum ]]; then
+        echo "Error: la lista suma $sum capítulos pero hay $total videos en la carpeta." >&2
+        echo "No se cambió nada. Revisa la lista o usa -e para limitar las extensiones." >&2
+        exit 1
+    fi
+
+    local k
+    for ((k = 1; k <= ${#parts[@]}; k++)); do
+        if [[ -e "$TARGET_DIR/T$k" || -L "$TARGET_DIR/T$k" ]]; then
+            echo "Error: ya existe '$TARGET_DIR/T$k'. Muévela o bórrala y vuelve a ejecutar." >&2
+            exit 1
+        fi
+    done
+
+    # --- 3. Vista previa ---
+    echo "[3/4] Vista previa (todavía no se ha tocado nada)..."
+    echo ""
+
+    local start=0 count subs c i
+    for ((k = 1; k <= ${#parts[@]}; k++)); do
+        count="${parts[k-1]}"
+        subs=0
+        for ((i = start; i < start + count; i++)); do
+            c="$(subtitle_companions "$TARGET_DIR/${videos[i]%.*}" | wc -l)"
+            subs=$((subs + c))
+        done
+        printf '      T%s: %s videos (%s ... %s)' "$k" "$count" "${videos[start]}" "${videos[start+count-1]}"
+        [[ $subs -gt 0 ]] && printf ', con %s subtítulos' "$subs"
+        echo ""
+        start=$((start + count))
+    done
+    echo ""
+
+    local confirm
+    read -r -p "¿Mover los videos a esas carpetas? (s/n): " confirm
+    if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
+        echo ""
+        echo "No se cambió nada."
+        return 0
+    fi
+    echo ""
+
+    # --- 4. Mover ---
+    echo "[4/4] Moviendo..."
+
+    local moved=0 failed=0 base sub
+    start=0
+    for ((k = 1; k <= ${#parts[@]}; k++)); do
+        count="${parts[k-1]}"
+        if ! mkdir "$TARGET_DIR/T$k"; then
+            echo "Error: no se pudo crear T$k." >&2
+            exit 1
+        fi
+        for ((i = start; i < start + count; i++)); do
+            base="$TARGET_DIR/${videos[i]%.*}"
+            if mv -n -- "$TARGET_DIR/${videos[i]}" "$TARGET_DIR/T$k/"; then
+                moved=$((moved + 1))
+            else
+                echo "      Error al mover '${videos[i]}'." >&2
+                failed=$((failed + 1))
+                continue
+            fi
+            while IFS= read -r sub; do
+                [[ -n "$sub" ]] && mv -n -- "$sub" "$TARGET_DIR/T$k/"
+            done < <(subtitle_companions "$base")
+        done
+        start=$((start + count))
+    done
+
+    banner "Proceso terminado"
+    echo "  Temporadas creadas:  ${#parts[@]}"
+    echo "  Videos movidos:      $moved"
+    [[ $failed -gt 0 ]] && echo "  Con error:           $failed"
+    echo ""
+
+    [[ $failed -eq 0 ]]
+}
+
+# ============================================================
+#  Modo --dupes
+# ============================================================
+
+# human_size <bytes>
+human_size() {
+    numfmt --to=iec-i --suffix=B "$1" 2>/dev/null || echo "$1 bytes"
+}
+
+mode_dupes() {
+    banner "Buscar duplicados"
+
+    echo "[1/4] Comprobando carpeta de trabajo..."
+    resolve_target
+
+    echo "[2/4] Agrupando archivos por tamaño..."
+
+    local -A by_size=()
+    local f size
+    for f in "$TARGET_DIR"/*; do
+        [[ -f "$f" && ! -L "$f" ]] || continue
+        [[ "${f##*/}" == *$'\n'* ]] && continue
+        size="$(stat -c %s -- "$f")"
+        [[ "$size" -gt 0 ]] || continue
+        by_size[$size]+="$f"$'\n'
+    done
+
+    # Primero una huella rápida (principio y final del archivo) y solo si
+    # coincide se calcula la completa, para no leer gigas enteros sin necesidad.
+    echo "[3/4] Comparando contenido (con archivos grandes puede tardar)..."
+
+    local -A by_quick=() by_full=()
+    local key members file quick full checked=0
+    for key in "${!by_size[@]}"; do
+        mapfile -t members <<< "${by_size[$key]%$'\n'}"
+        [[ ${#members[@]} -ge 2 ]] || continue
+        for file in "${members[@]}"; do
+            quick="$({ head -c 1048576 -- "$file"; tail -c 1048576 -- "$file"; } | sha256sum | cut -d' ' -f1)"
+            by_quick["$key:$quick"]+="$file"$'\n'
+        done
+    done
+
+    for key in "${!by_quick[@]}"; do
+        mapfile -t members <<< "${by_quick[$key]%$'\n'}"
+        [[ ${#members[@]} -ge 2 ]] || continue
+        for file in "${members[@]}"; do
+            checked=$((checked + 1))
+            printf '\r      Calculando huella completa... %s' "$checked"
+            full="$(sha256sum -- "$file" | cut -d' ' -f1)"
+            by_full["$key:$full"]+="$file"$'\n'
+        done
+    done
+    [[ $checked -gt 0 ]] && echo ""
+    echo ""
+
+    # Para cada grupo idéntico se conserva el más antiguo (si empatan, el de
+    # nombre más corto, que suele ser el original y no "video (2).mp4").
+    local keep_list=() del_list=() del_bytes=0 groups=0
+    local sorted entry g keep
+    for key in "${!by_full[@]}"; do
+        mapfile -t members <<< "${by_full[$key]%$'\n'}"
+        [[ ${#members[@]} -ge 2 ]] || continue
+        groups=$((groups + 1))
+
+        mapfile -t sorted < <(
+            for file in "${members[@]}"; do
+                printf '%s\t%05d\t%s\n' "$(stat -c '%.9W' -- "$file")" "${#file}" "$file"
+            done | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 -k3,3
+        )
+
+        keep="${sorted[0]#*$'\t'}"
+        keep="${keep#*$'\t'}"
+        keep_list+=("$keep")
+
+        for ((g = 1; g < ${#sorted[@]}; g++)); do
+            entry="${sorted[g]#*$'\t'}"
+            entry="${entry#*$'\t'}"
+            del_list+=("$entry")
+            del_bytes=$((del_bytes + $(stat -c %s -- "$entry")))
+        done
+    done
+
+    echo "[4/4] Resultado..."
+    echo ""
+
+    if [[ $groups -eq 0 ]]; then
+        echo "      No hay archivos duplicados en '$TARGET_DIR'."
+        echo ""
+        return 0
+    fi
+
+    echo "      Grupos de archivos idénticos: $groups"
+    echo "      Copias que se pueden borrar:  ${#del_list[@]} ($(human_size "$del_bytes"))"
+    echo ""
+
+    # Mostrar cada grupo: qué se conserva y qué se borraría
+    for key in "${!by_full[@]}"; do
+        mapfile -t members <<< "${by_full[$key]%$'\n'}"
+        [[ ${#members[@]} -ge 2 ]] || continue
+        mapfile -t sorted < <(
+            for file in "${members[@]}"; do
+                printf '%s\t%05d\t%s\n' "$(stat -c '%.9W' -- "$file")" "${#file}" "$file"
+            done | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 -k3,3
+        )
+        keep="${sorted[0]#*$'\t'}"; keep="${keep#*$'\t'}"
+        echo "      Se conserva: ${keep##*/}"
+        for ((g = 1; g < ${#sorted[@]}; g++)); do
+            entry="${sorted[g]#*$'\t'}"; entry="${entry#*$'\t'}"
+            echo "      Se borraría: ${entry##*/}"
+        done
+        echo ""
+    done
+
+    local confirm
+    read -r -p "¿Borrar las ${#del_list[@]} copias? Esto no se puede deshacer. (s/n): " confirm
+    if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
+        echo ""
+        echo "No se borró nada."
+        return 0
+    fi
+    echo ""
+
+    local deleted=0
+    for file in "${del_list[@]}"; do
+        if rm -f -- "$file"; then
+            deleted=$((deleted + 1))
+        else
+            echo "      No se pudo borrar '${file##*/}'." >&2
+        fi
+    done
+
+    banner "Proceso terminado"
+    echo "  Copias borradas:   $deleted"
+    echo "  Espacio liberado:  $(human_size "$del_bytes")"
+    echo ""
+}
+
+# ============================================================
+#  Modo --update
+# ============================================================
+
+mode_update() {
+    banner "Actualizar orgie"
+
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "Error: hace falta 'curl' para buscar actualizaciones." >&2
+        exit 1
+    fi
+
+    if ! is_orgie_file "$INSTALL_PATH"; then
+        echo "Error: orgie no está instalado en '$INSTALL_PATH'." >&2
+        echo "Instálalo primero con:  bash orgie.sh --install" >&2
+        exit 1
+    fi
+
+    local current latest newest
+    current="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$INSTALL_PATH" | head -n 1)"
+
+    echo "      Versión instalada: ${current:-desconocida}"
+    echo "      Buscando en: $REPO_RAW_URL"
+    echo ""
+
+    UPDATE_TMP="$(mktemp)"
+    trap 'rm -f "${UPDATE_TMP:-}"' EXIT
+
+    if ! curl -fsSL --max-time 20 -o "$UPDATE_TMP" "$REPO_RAW_URL"; then
+        echo "Error: no se pudo descargar la versión publicada (¿sin internet?)." >&2
+        exit 1
+    fi
+
+    # Se comprueba que lo descargado sea de verdad este script y que no esté roto
+    if ! is_orgie_file "$UPDATE_TMP" || ! bash -n "$UPDATE_TMP" 2>/dev/null; then
+        echo "Error: lo descargado no parece un orgie válido. No se instala nada." >&2
+        exit 1
+    fi
+
+    latest="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$UPDATE_TMP" | head -n 1)"
+    if [[ -z "$latest" || -z "$current" ]]; then
+        echo "Error: no se pudo leer la versión. No se instala nada." >&2
+        exit 1
+    fi
+
+    echo "      Versión publicada: $latest"
+    echo ""
+
+    if [[ "$latest" == "$current" ]]; then
+        echo "      Ya tienes la última versión."
+        echo ""
+        return 0
+    fi
+
+    newest="$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n 1)"
+    if [[ "$newest" == "$current" ]]; then
+        echo "      Tu versión es más nueva que la publicada. No se cambia nada."
+        echo ""
+        return 0
+    fi
+
+    local confirm
+    read -r -p "¿Instalar la versión $latest en lugar de la $current? (s/n): " confirm
+    if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
+        echo ""
+        echo "No se cambió nada."
+        return 0
+    fi
+
+    if ! install -m 755 -- "$UPDATE_TMP" "$INSTALL_PATH"; then
+        echo "Error: no se pudo copiar la nueva versión a '$INSTALL_PATH'." >&2
+        exit 1
+    fi
+
+    echo ""
+    echo "      Actualizado a la versión $latest."
+    echo ""
+}
+
+# ============================================================
 #  Lectura de flags y selección de modo
 # ============================================================
 
@@ -1040,13 +1503,14 @@ START=1
 EXTS="$DEFAULT_EXTS"
 TARGET_ARG=""
 SUB_LANG="es"
+SPLIT_LIST=""
 START_SET=0
 EXT_SET=0
 LANG_SET=0
 
 set_mode() {
     if [[ -n "$MODE" && "$MODE" != "$1" ]]; then
-        echo "Error: elige un solo modo (--games, --series o --subs), no varios." >&2
+        echo "Error: elige un solo modo, no varios (usa -h para ver la lista)." >&2
         exit 1
     fi
     MODE="$1"
@@ -1074,6 +1538,9 @@ while [[ $# -gt 0 ]]; do
         -g|--games)   set_mode games;  shift ;;
         -s|--series)  set_mode series; shift ;;
         -t|--subs)    set_mode subs;   shift ;;
+        -d|--dupes)   set_mode dupes;  shift ;;
+        -p|--split)   need_value "$1" $#; SPLIT_LIST="$2"; set_mode split; shift 2 ;;
+        --update)     set_mode update;    shift ;;
         --install)    set_mode install;   shift ;;
         --uninstall)  set_mode uninstall; shift ;;
         -n|--start)   need_value "$1" $#; START="$2";    START_SET=1; shift 2 ;;
@@ -1086,43 +1553,38 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$MODE" ]]; then
-    echo "Error: falta indicar el modo (-g/--games, -s/--series o -t/--subs)." >&2
+    echo "Error: falta indicar el modo (por ejemplo -g, -s o -t)." >&2
     echo "" >&2
     usage >&2
     exit 1
 fi
 
+# Cada modo solo acepta sus propias opciones
+bad_opts=0
 case "$MODE" in
-    install|uninstall)
-        if [[ $START_SET -eq 1 || $EXT_SET -eq 1 || $LANG_SET -eq 1 || -n "$TARGET_ARG" ]]; then
-            echo "Error: --install y --uninstall no aceptan carpeta ni otras opciones." >&2
-            exit 1
-        fi
-        ;;
-    games)
-        if [[ $START_SET -eq 1 || $EXT_SET -eq 1 || $LANG_SET -eq 1 ]]; then
-            echo "Error: -n, -e y -l no se usan con -g/--games." >&2
-            exit 1
-        fi
-        ;;
+    install|uninstall|update)
+        [[ $((START_SET + EXT_SET + LANG_SET)) -gt 0 || -n "$TARGET_ARG" ]] && bad_opts=1 ;;
+    games|dupes)
+        [[ $((START_SET + EXT_SET + LANG_SET)) -gt 0 ]] && bad_opts=1 ;;
     series)
-        if [[ $LANG_SET -eq 1 ]]; then
-            echo "Error: -l/--lang solo se usa con -t/--subs." >&2
-            exit 1
-        fi
-        ;;
+        [[ $LANG_SET -eq 1 ]] && bad_opts=1 ;;
     subs)
-        if [[ $START_SET -eq 1 ]]; then
-            echo "Error: -n/--start solo se usa con -s/--series." >&2
-            exit 1
-        fi
-        ;;
+        [[ $START_SET -eq 1 ]] && bad_opts=1 ;;
+    split)
+        [[ $START_SET -eq 1 || $LANG_SET -eq 1 ]] && bad_opts=1 ;;
 esac
+if [[ $bad_opts -eq 1 ]]; then
+    echo "Error: alguna de las opciones o la carpeta indicada no se usa con este modo (mira -h)." >&2
+    exit 1
+fi
 
 case "$MODE" in
-    games)  mode_games ;;
-    series) mode_series ;;
-    subs)   mode_subs ;;
+    games)     mode_games ;;
+    series)    mode_series ;;
+    subs)      mode_subs ;;
+    split)     mode_split ;;
+    dupes)     mode_dupes ;;
+    update)    mode_update ;;
     install)   mode_install ;;
     uninstall) mode_uninstall ;;
 esac
