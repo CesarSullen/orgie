@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-VERSION="0.5.1"
+VERSION="0.6.0"
 INSTALL_DIR="$HOME/.local/bin"
 INSTALL_PATH="$INSTALL_DIR/orgie"
 REPO_RAW_URL="https://raw.githubusercontent.com/CesarSullen/orgie/main/orgie.sh"
@@ -46,6 +46,9 @@ Modos (hay que elegir uno):
   -p, --split LISTA  Reparte los videos, en orden de nombre, en carpetas T1, T2...
                      según los capítulos de cada temporada. Ej: -p 24,12,13.
                      Los subtítulos viajan con su video. Pide confirmación.
+                     Si lo combinas con -s (orgie -p 11,12 -s), los videos se
+                     ordenan por fecha de creación, se reparten y se numeran
+                     desde 01 en cada temporada.
   -d, --dupes        Busca archivos idénticos en la carpeta y ofrece borrar las
                      copias, conservando el más antiguo. No se puede deshacer.
   --update           Mira si hay una versión nueva en GitHub y, si la hay, la
@@ -56,11 +59,12 @@ Modos (hay que elegir uno):
 
 Opciones de --series:
   -n, --start N      Número inicial (por defecto 1). Con -n 36 sale 036, 037...
+                     Junto con -p, solo afecta a la primera temporada.
 
 Opciones de --subs:
   -l, --lang COD     Idioma (por defecto es). Ejemplos: en, pt-BR.
 
-Opciones de --series, --subs y --split:
+Opciones de --series, --subs y --split (con o sin --series):
   -e, --ext LISTA    Extensiones a procesar, separadas por comas y sin punto.
                      Por defecto: mp4,mkv,avi,mov,webm,m4v,ts,flv,wmv
 
@@ -73,6 +77,7 @@ Ejemplos:
   orgie -s .
   orgie -s -n 36 -e mkv ~/Series/Temporada1
   orgie -p 24,12,13 ~/Series/MiSerie
+  orgie -p 11,12 -s ~/Series/MiSerie
   orgie -d ~/Downloads
   orgie -t ~/Peliculas/MiPelicula.mkv
   orgie --update
@@ -1495,6 +1500,245 @@ mode_update() {
 }
 
 # ============================================================
+#  Modo --split junto con --series
+# ============================================================
+
+mode_splitseries() {
+    banner "Temporadas numeradas por fecha de creación"
+
+    if ! [[ "$SPLIT_LIST" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+        echo "Error: la lista debe ser números separados por comas, por ejemplo: -p 11,12" >&2
+        exit 1
+    fi
+    if ! [[ "$START" =~ ^[0-9]+$ ]]; then
+        echo "Error: -n/--start debe ser un número entero (ej: -n 36)." >&2
+        exit 1
+    fi
+    START=$((10#$START))
+
+    local parts=() raw n sum=0
+    IFS=',' read -r -a raw <<< "$SPLIT_LIST"
+    for n in "${raw[@]}"; do
+        n=$((10#$n))
+        if [[ $n -lt 1 ]]; then
+            echo "Error: cada temporada debe tener al menos 1 capítulo." >&2
+            exit 1
+        fi
+        parts+=("$n")
+        sum=$((sum + n))
+    done
+
+    # --- 1. Carpeta ---
+    echo "[1/4] Comprobando carpeta de trabajo..."
+    resolve_target
+
+    if ! stat -c '%W' / >/dev/null 2>&1; then
+        echo "Error: 'stat' no soporta la fecha de creación (se necesita GNU stat, el de Linux)." >&2
+        exit 1
+    fi
+
+    # --- 2. Videos y fechas de creación ---
+    echo "[2/4] Buscando videos y leyendo su fecha de creación..."
+
+    local -A allowed=()
+    local ext_list e f name ext birth lines=() skipped=0
+    IFS=',' read -r -a ext_list <<< "$EXTS"
+    for e in "${ext_list[@]}"; do
+        e="${e#.}"
+        e="${e,,}"
+        [[ -n "$e" ]] && allowed["$e"]=1
+    done
+
+    for f in "$TARGET_DIR"/*; do
+        [[ -f "$f" && ! -L "$f" ]] || continue
+        name="${f##*/}"
+        [[ "$name" == *.* ]] || continue
+        ext="${name##*.}"
+        ext="${ext,,}"
+        [[ -n "${allowed[$ext]:-}" ]] || continue
+
+        if [[ "$name" == *$'\t'* || "$name" == *$'\n'* ]]; then
+            echo "      Aviso: se omite '$name' (tiene tabulador o salto de línea en el nombre)."
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        birth="$(stat -c '%.9W' -- "$f")"
+        if ! [[ "$birth" =~ ^[1-9][0-9]*(\.[0-9]+)?$ ]]; then
+            echo "Error: no se pudo leer la fecha de creación de '$name'." >&2
+            echo "Tu sistema de archivos quizá no la guarda, así que no es seguro ordenar con ella." >&2
+            exit 1
+        fi
+        lines+=("$birth"$'\t'"$name")
+    done
+
+    local total=${#lines[@]}
+
+    if [[ $total -eq 0 ]]; then
+        echo "      No se encontraron videos (extensiones: $EXTS) en '$TARGET_DIR'."
+        echo ""
+        return 0
+    fi
+
+    local sorted
+    mapfile -t sorted < <(printf '%s\n' "${lines[@]}" | LC_ALL=C sort -t $'\t' -k1,1 -k2,2)
+
+    echo "      Videos encontrados: $total"
+    [[ $skipped -gt 0 ]] && echo "      Omitidos por nombre raro: $skipped"
+    echo ""
+
+    if [[ $total -ne $sum ]]; then
+        echo "Error: la lista suma $sum capítulos pero hay $total videos en la carpeta." >&2
+        echo "No se cambió nada. Revisa la lista o usa -e para limitar las extensiones." >&2
+        exit 1
+    fi
+
+    local k
+    for ((k = 1; k <= ${#parts[@]}; k++)); do
+        if [[ -e "$TARGET_DIR/T$k" || -L "$TARGET_DIR/T$k" ]]; then
+            echo "Error: ya existe '$TARGET_DIR/T$k'. Muévela o bórrala y vuelve a ejecutar." >&2
+            exit 1
+        fi
+    done
+
+    # Cada temporada empieza en 01 (la primera, en el -n que indiques) y usa
+    # 2 cifras, o 3 si llega a 100 capítulos o más.
+    local V_SRC=() V_DST=() V_BIRTH=() V_SEASON=()
+    local idx=0 i count first_num last_num width num newbase entry
+    local ties=0 prev_birth=""
+    for ((k = 1; k <= ${#parts[@]}; k++)); do
+        count="${parts[k-1]}"
+        first_num=1
+        [[ $k -eq 1 ]] && first_num=$START
+        last_num=$((first_num + count - 1))
+        width=${#last_num}
+        [[ $width -lt 2 ]] && width=2
+
+        for ((i = 0; i < count; i++)); do
+            entry="${sorted[idx]}"
+            birth="${entry%%$'\t'*}"
+            name="${entry#*$'\t'}"
+            ext="${name##*.}"
+            num=$((first_num + i))
+            newbase="$(printf '%0*d' "$width" "$num")"
+
+            V_SRC+=("$name")
+            V_DST+=("T$k/$newbase.$ext")
+            V_BIRTH+=("$birth")
+            V_SEASON+=("$k")
+
+            [[ "$birth" == "$prev_birth" ]] && ties=$((ties + 1))
+            prev_birth="$birth"
+            idx=$((idx + 1))
+        done
+    done
+
+    # Los subtítulos con el mismo nombre que un video se mueven y renombran con él
+    local S_SRC=() S_DST=() sub rest dest_rel
+    local -A is_video=() claimed=()
+    for name in "${V_SRC[@]}"; do is_video["$name"]=1; done
+
+    for ((i = 0; i < total; i++)); do
+        dest_rel="${V_DST[i]}"
+        newbase="${dest_rel#*/}"
+        newbase="${newbase%.*}"
+        while IFS= read -r sub; do
+            [[ -n "$sub" ]] || continue
+            sub="${sub##*/}"
+            [[ -z "${claimed[$sub]:-}" && -z "${is_video[$sub]:-}" ]] || continue
+            rest="${sub#"${V_SRC[i]%.*}".}"
+            claimed["$sub"]=1
+            S_SRC+=("$sub")
+            S_DST+=("${dest_rel%%/*}/$newbase.$rest")
+        done < <(subtitle_companions "$TARGET_DIR/${V_SRC[i]%.*}")
+    done
+
+    # --- 3. Vista previa ---
+    echo "[3/4] Vista previa (todavía no se ha tocado nada)..."
+    echo ""
+
+    if [[ $ties -gt 0 ]]; then
+        echo "      Aviso: $ties archivos tienen exactamente la misma fecha de creación que otro;"
+        echo "             entre ellos el orden se decide por nombre."
+        echo ""
+    fi
+
+    local start=0 when
+    for ((k = 1; k <= ${#parts[@]}; k++)); do
+        count="${parts[k-1]}"
+        echo "      T$k: $count videos"
+        for ((i = start; i < start + count; i++)); do
+            if [[ $count -gt 6 && $i -eq $((start + 3)) ]]; then
+                echo "        ..."
+            fi
+            if [[ $count -gt 6 && $i -ge $((start + 3)) && $i -lt $((start + count - 2)) ]]; then
+                continue
+            fi
+            when="$(date -d "@${V_BIRTH[i]%.*}" '+%d/%m %H:%M:%S')"
+            printf '        %s  <-  %s   (creado %s)\n' "${V_DST[i]}" "${V_SRC[i]}" "$when"
+        done
+        start=$((start + count))
+        echo ""
+    done
+
+    local sub_text=""
+    if [[ ${#S_SRC[@]} -gt 0 ]]; then
+        echo "      Además, ${#S_SRC[@]} subtítulos se mueven y renombran con su video, por ejemplo:"
+        echo "        ${S_DST[0]}  <-  ${S_SRC[0]}"
+        echo ""
+        sub_text=" y ${#S_SRC[@]} subtítulos"
+    fi
+
+    local confirm
+    read -r -p "¿Mover y renombrar los $total videos$sub_text? Esto no se puede deshacer. (s/n): " confirm
+    if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
+        echo ""
+        echo "No se cambió nada."
+        return 0
+    fi
+    echo ""
+
+    # --- 4. Mover y renombrar ---
+    echo "[4/4] Moviendo y renombrando..."
+
+    local made=() j
+    for ((k = 1; k <= ${#parts[@]}; k++)); do
+        if ! mkdir "$TARGET_DIR/T$k"; then
+            echo "Error: no se pudo crear T$k. Se deshace lo hecho." >&2
+            for j in "${made[@]}"; do rmdir "$TARGET_DIR/$j" 2>/dev/null; done
+            exit 1
+        fi
+        made+=("T$k")
+    done
+
+    local all_src=("${V_SRC[@]}") all_dst=("${V_DST[@]}")
+    if [[ ${#S_SRC[@]} -gt 0 ]]; then
+        all_src+=("${S_SRC[@]}")
+        all_dst+=("${S_DST[@]}")
+    fi
+
+    for ((i = 0; i < ${#all_src[@]}; i++)); do
+        if mv -n -- "$TARGET_DIR/${all_src[i]}" "$TARGET_DIR/${all_dst[i]}" \
+            && [[ -e "$TARGET_DIR/${all_dst[i]}" && ! -e "$TARGET_DIR/${all_src[i]}" ]]; then
+            :
+        else
+            echo "Error al mover '${all_src[i]}'. Se devuelve todo a como estaba..." >&2
+            for ((j = i - 1; j >= 0; j--)); do
+                mv -n -- "$TARGET_DIR/${all_dst[j]}" "$TARGET_DIR/${all_src[j]}"
+            done
+            for j in "${made[@]}"; do rmdir "$TARGET_DIR/$j" 2>/dev/null; done
+            exit 1
+        fi
+    done
+
+    banner "Proceso terminado"
+    echo "  Temporadas creadas:  ${#parts[@]}"
+    echo "  Videos movidos:      $total"
+    [[ ${#S_SRC[@]} -gt 0 ]] && echo "  Subtítulos movidos:  ${#S_SRC[@]}"
+    echo ""
+}
+
+# ============================================================
 #  Lectura de flags y selección de modo
 # ============================================================
 
@@ -1509,11 +1753,18 @@ EXT_SET=0
 LANG_SET=0
 
 set_mode() {
-    if [[ -n "$MODE" && "$MODE" != "$1" ]]; then
-        echo "Error: elige un solo modo, no varios (usa -h para ver la lista)." >&2
-        exit 1
+    local new="$1"
+    if [[ -z "$MODE" || "$MODE" == "$new" ]]; then
+        MODE="$new"
+        return
     fi
-    MODE="$1"
+    case "$MODE:$new" in
+        split:series|series:split|splitseries:series|splitseries:split)
+            MODE="splitseries" ;;
+        *)
+            echo "Error: elige un solo modo, no varios (usa -h para ver la lista)." >&2
+            exit 1 ;;
+    esac
 }
 
 set_target() {
@@ -1572,6 +1823,8 @@ case "$MODE" in
         [[ $START_SET -eq 1 ]] && bad_opts=1 ;;
     split)
         [[ $START_SET -eq 1 || $LANG_SET -eq 1 ]] && bad_opts=1 ;;
+    splitseries)
+        [[ $LANG_SET -eq 1 ]] && bad_opts=1 ;;
 esac
 if [[ $bad_opts -eq 1 ]]; then
     echo "Error: alguna de las opciones o la carpeta indicada no se usa con este modo (mira -h)." >&2
@@ -1583,6 +1836,7 @@ case "$MODE" in
     series)    mode_series ;;
     subs)      mode_subs ;;
     split)     mode_split ;;
+    splitseries) mode_splitseries ;;
     dupes)     mode_dupes ;;
     update)    mode_update ;;
     install)   mode_install ;;

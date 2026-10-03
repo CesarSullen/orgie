@@ -70,7 +70,8 @@ orgie -g .                     # juegos: organiza los .rar/.zip de la carpeta ac
 orgie -g ~/Downloads/Games     # juegos: en otra carpeta
 orgie -s .                     # series: numera los videos de la carpeta actual
 orgie -s -n 36 .               # series: empieza en 036
-orgie -p 24,12,13 .            # temporadas: T1 con 24 capítulos, T2 con 12 y T3 con 13
+orgie -p 24,12,13 .            # temporadas: T1 con 24 capítulos, T2 con 12 y T3 con 13 (por nombre)
+orgie -p 11,12 -s .            # temporadas y numeración por fecha de creación
 orgie -d ~/Downloads           # duplicados: busca archivos idénticos en esa carpeta
 orgie --update                 # actualizar orgie
 orgie -t .                     # subtítulos: para los videos de la carpeta actual
@@ -128,6 +129,22 @@ orgie -p 24,12,13 .
 ```
 
 Con eso, los primeros 24 videos van a `T1`, los siguientes 12 a `T2` y los últimos 13 a `T3`. Los archivos no se renombran. Los subtítulos con el mismo nombre que un video (`03.mp4` y `03.es.srt`) se mueven con él.
+
+### Temporadas y numeración a la vez (`-p` con `-s`)
+
+Si usas las dos flags juntas, el orden deja de ser por nombre y pasa a ser por fecha de creación, igual que en `-s`:
+
+```bash
+orgie -p 11,12 -s .
+```
+
+Ordena todos los videos por el momento en que empezaron a descargarse, mete los primeros 11 en `T1` y los siguientes 12 en `T2`, y en cada carpeta los numera desde `01` (`01.mp4` a `11.mp4` en la primera, `01.mp4` a `12.mp4` en la segunda). Los nombres originales no influyen en nada. Cada temporada usa dos cifras, o tres si tiene 100 capítulos o más.
+
+Con `-n` cambia el número con el que empieza la **primera** temporada (`-p 189,12 -s -n 36` da `036` a `224` en `T1` y `01` a `12` en `T2`). Los subtítulos con el mismo nombre que un video se mueven y renombran con él. Antes de tocar nada enseña, por temporada, los primeros y los últimos y pide confirmación; no se puede deshacer, aunque si algo falla a mitad de la operación devuelve todo a como estaba.
+
+Todo lo de `-s` sobre la fecha de creación (descargar en orden, no copiar los archivos) sigue valiendo aquí.
+
+### Reglas de la lista
 
 La suma de la lista tiene que coincidir con el número de videos de la carpeta; si no, se detiene sin tocar nada (con `-e` puedes limitar las extensiones). Tampoco sigue si ya existe alguna carpeta `T1`, `T2`... que vaya a crear. Enseña la vista previa y pide confirmación antes de mover.
 
