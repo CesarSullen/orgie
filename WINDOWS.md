@@ -132,6 +132,9 @@ orgie -s -n 36 .            # igual, empezando en 036
 orgie -s --by-name .        # renumera por nombre (si la fecha de creación no sirve)
 orgie -p 24,12,13 .         # reparte en T1, T2 y T3 según los capítulos de cada temporada
 orgie -d .                  # busca archivos duplicados
+orgie -c .                  # limpia la basura de los nombres de los videos
+orgie -a "nombre" .          # mete en una carpeta los videos que coinciden con ese nombre
+orgie -o .                  # reparte los archivos en Videos, Musica, Imagenes...
 orgie -t .                  # descarga subtítulos
 orgie -g .                  # organiza juegos de Switch (.rar y .zip)
 ```
@@ -150,7 +153,7 @@ sudo apt install unzip p7zip-full
 
 Instala `unzip` (para `.zip`) y 7-Zip (que abre `.zip` y `.rar`).
 
-**Subtítulos (`-t`)**: necesita subliminal, que se instala con pipx.
+**Subtítulos (`-t`)**: necesita subliminal. No hace falta instalarlo a mano: la primera vez que uses `-t`, orgie te dice qué falta, te enseña los comandos que ejecutaría y pregunta si quieres instalarlo. Responde `s` y escribe la contraseña de Ubuntu cuando la pida. Si prefieres hacerlo tú:
 
 ```bash
 sudo apt update
@@ -159,13 +162,15 @@ pipx ensurepath
 pipx install subliminal
 ```
 
-Qué hace cada línea: actualiza la lista de programas, instala pipx, le dice a Ubuntu dónde dejará los programas, y instala subliminal aislado en su propia carpeta. No hace falta instalar Python aparte: pipx lo trae como dependencia y apt lo instala solo si falta. Después **cierra y vuelve a abrir la ventana de Ubuntu**. La primera vez que uses `-t`, orgie te preguntará si quieres iniciar sesión con tu cuenta de OpenSubtitles; el README explica qué se guarda y dónde. Para quitar subliminal: `pipx uninstall subliminal`.
+Qué hace cada línea: actualiza la lista de programas, instala pipx, le dice a Ubuntu dónde dejará los programas, y instala subliminal aislado en su propia carpeta. No hace falta instalar Python aparte: pipx lo trae como dependencia y apt lo instala solo si falta. Después **cierra y vuelve a abrir la ventana de Ubuntu**. La primera vez que uses `-t`, orgie también te preguntará si quieres iniciar sesión con tu cuenta de OpenSubtitles; el README explica qué se guarda y dónde. Para quitar subliminal: `pipx uninstall subliminal`.
+
+**Subtítulos de videos de YouTube (`-t --youtube`)**: busca solo en YouTube y necesita `yt-dlp` y `ffprobe` (no necesita subliminal ni cuenta). Funciona igual: orgie los ofrece instalar la primera vez que los necesite (`yt-dlp` con pipx y `ffprobe` dentro del paquete `ffmpeg`, con apt).
 
 ## Actualizar y desinstalar
 
 ```bash
 orgie --update        # busca una versión nueva y pregunta antes de instalarla
-orgie --uninstall     # quita orgie, y también la sesión y la caché si las hubiera
+orgie --uninstall     # quita orgie, y también tus cuentas de OpenSubtitles si las hubiera
 ```
 
 ## Si algo falla
@@ -179,6 +184,8 @@ orgie --uninstall     # quita orgie, y también la sesión y la caché si las hu
 Si sigue sin funcionar, copia el texto completo del error (no hace falta captura) para poder verlo.
 
 **`orgie -t` dice "límite diario de descargas alcanzado".** OpenSubtitles limita cuántos subtítulos se pueden bajar por día. No es un problema de tu contraseña ni de la instalación, y orgie sigue con las otras fuentes mientras tanto.
+
+**`orgie -d` o `orgie -g` dicen que no pueden mandar un archivo a la papelera.** En Ubuntu de WSL no hay una papelera como la de Windows, y en las carpetas de Windows (`/mnt/c/...`) puede que no funcione. En ese caso orgie no borra el archivo, nunca lo borra para siempre, y te lo dice. Puedes quitarlo tú desde el Explorador de Windows.
 
 ## Al terminar deberías tener
 

@@ -4,7 +4,9 @@
 
 set -uo pipefail
 
-VERSION="0.7.2"
+VERSION="0.9.0"
+OS_RELEASE="/etc/os-release"
+YT_TOLERANCE=3
 INSTALL_DIR="$HOME/.local/bin"
 INSTALL_PATH="$INSTALL_DIR/orgie"
 REPO_RAW_URL="https://raw.githubusercontent.com/CesarSullen/orgie/main/orgie.sh"
@@ -33,8 +35,10 @@ Si no indicas carpeta se usa la actual (.).
 
 Modos (hay que elegir uno):
   -g, --games        Descomprime juegos de Nintendo Switch (.rar/.zip) en una
-                     carpeta por juego. Enseña el plan y pide confirmación; el
-                     README.md con los tamaños es opcional.
+                     carpeta por juego. Enseña el plan, avisa de los archivos
+                     dañados o incompletos y pide confirmación; el README.md con
+                     los tamaños es opcional. Los .zip/.rar ya extraídos pueden
+                     ir a la papelera.
   -s, --series       Renombra los videos con números (01, 02... o 001, 002...)
                      según su fecha de creación en el disco, y conserva la
                      extensión. Los subtítulos con el mismo nombre que un video
@@ -42,15 +46,29 @@ Modos (hay que elegir uno):
                      confirmación. No se puede deshacer.
   -t, --subs         Descarga subtítulos (en español por defecto) de un video o
                      de todos los de una carpeta, y los guarda al lado con el
-                     mismo nombre (Pelicula.es.srt). Necesita 'subliminal'.
+                     mismo nombre (Pelicula.es.srt). Necesita 'subliminal'; si
+                     falta, orgie ofrece instalarlo.
   -p, --split LISTA  Reparte los videos, en orden de nombre, en carpetas T1, T2...
                      según los capítulos de cada temporada. Ej: -p 24,12,13.
                      Los subtítulos viajan con su video. Pide confirmación.
                      Si lo combinas con -s (orgie -p 11,12 -s), los videos se
                      ordenan por fecha de creación, se reparten y se numeran
                      desde 01 en cada temporada.
-  -d, --dupes        Busca archivos idénticos en la carpeta y ofrece borrar las
-                     copias, conservando el más antiguo. No se puede deshacer.
+  -d, --dupes        Busca archivos idénticos en la carpeta y ofrece mandar las
+                     copias a la papelera, conservando el más antiguo.
+  -a, --group [CRIT] Agrupa videos por nombre en una carpeta, con sus subtítulos.
+                     CRIT: palabras separadas por comas, que deben aparecer
+                     todas; lo que va entre comillas debe aparecer junto; con
+                     - delante se excluye. Ej: -a "star trek,-discovery". Sin
+                     CRIT propone grupos por las dos primeras palabras. Se
+                     puede combinar con -p y -s. Siempre pide confirmación.
+  -c, --clean        Limpia los nombres de los videos: quita etiquetas de sitios,
+                     usuarios de canales y calidad (1080p, x265, BluRay...).
+                     Enseña una vista previa y pide confirmación. No se puede
+                     deshacer.
+  -o, --sort         Reparte los archivos sueltos de la carpeta en Videos, Musica,
+                     Imagenes, Documentos, Comprimidos e Instaladores. Si ya tienes
+                     una de esas carpetas, la usa sin tocar lo que hay dentro.
   --update           Mira si hay una versión nueva en GitHub y, si la hay, la
                      instala tras confirmar.
   --install          Copia orgie a ~/.local/bin/orgie para usarlo desde cualquier
@@ -66,8 +84,13 @@ Opciones de --series:
 
 Opciones de --subs:
   -l, --lang COD     Idioma (por defecto es). Ejemplos: en, pt-BR.
+  --youtube          Para videos de YouTube: busca solo en YouTube, por título y
+                     duración, y baja su subtítulo (manual si existe, si no el
+                     automático). No consulta OpenSubtitles ni las fuentes de
+                     películas. Necesita yt-dlp y ffprobe; si faltan, orgie
+                     ofrece instalarlos.
 
-Opciones de --series, --subs y --split (con o sin --series):
+Opciones de --series, --subs, --split y --clean:
   -e, --ext LISTA    Extensiones a procesar, separadas por comas y sin punto.
                      Por defecto: mp4,mkv,avi,mov,webm,m4v,ts,flv,wmv
 
@@ -83,7 +106,12 @@ Ejemplos:
   orgie -p 11,12 -s ~/Series/MiSerie
   orgie -s --by-name ~/Series/MiSerie
   orgie -d ~/Downloads
+  orgie -c ~/Downloads
+  orgie -a "the big bang theory" ~/Downloads
+  orgie -a "the big bang theory" -p 12,24 -s ~/Downloads
+  orgie -o ~/Downloads
   orgie -t ~/Peliculas/MiPelicula.mkv
+  orgie -t --youtube -l en ~/Videos
   orgie --update
   bash orgie.sh --install
 EOF
@@ -218,6 +246,7 @@ mode_games() {
     local extracted_files=()
     local failed_files=()
     local confirm
+    local -A bad_archives=()
 
     # --- 3. Plan y confirmación ---
     echo "[3/5] Plan (todavía no se ha tocado nada)..."
@@ -236,6 +265,11 @@ mode_games() {
             echo "      $plan_name"
             if [[ -z "$plan_game" ]]; then
                 echo "        -> se omite (no se reconoce el nombre del juego)"
+                continue
+            fi
+            if ! archive_ok "$plan_file"; then
+                echo "        -> se omite (el archivo está dañado o incompleto)"
+                bad_archives["$plan_file"]=1
                 continue
             fi
             plan_existing="$(find_existing_folder "$plan_game" "$TARGET_DIR" || true)"
@@ -278,6 +312,13 @@ mode_games() {
             echo "----------------------------------------"
             echo "  [$current_file/$total_files] $filename_noext"
             echo "----------------------------------------"
+
+            if [[ -n "${bad_archives[$archive_file]:-}" ]]; then
+                echo "      Se omite: el archivo está dañado o incompleto."
+                failed_files+=("$filename (dañado o incompleto)")
+                echo ""
+                continue
+            fi
 
             game_name="$(game_name_from "$filename")"
 
@@ -406,23 +447,27 @@ mode_games() {
 
     # --- Preguntar si se borran los archivos ya extraídos con éxito ---
     if [[ ${#extracted_files[@]} -gt 0 ]]; then
-        read -r -p "¿Eliminar los ${#extracted_files[@]} archivos ya extraídos con éxito? (s/n): " confirm
+        read -r -p "¿Mandar a la papelera los ${#extracted_files[@]} archivos ya extraídos con éxito? (s/n): " confirm
 
         if [[ "$confirm" == "s" || "$confirm" == "S" ]]; then
             echo ""
-            echo "Eliminando archivos..."
-
-            local archive_file
-            for archive_file in "${extracted_files[@]}"; do
-                rm -f "$archive_file"
-                echo "      Eliminado: $(basename "$archive_file")"
-            done
-
-            echo ""
-            echo "Listo. Solo quedan las carpetas de juegos organizadas."
+            if ensure_trash; then
+                local archive_file
+                for archive_file in "${extracted_files[@]}"; do
+                    if send_to_trash "$archive_file"; then
+                        echo "      A la papelera: $(basename "$archive_file")"
+                    else
+                        echo "      No se pudo mandar a la papelera: $(basename "$archive_file") (no se borró)" >&2
+                    fi
+                done
+                echo ""
+                echo "Listo. Los archivos están en la papelera; vacíala cuando quieras liberar el espacio."
+            else
+                echo "No se borró nada: sin papelera disponible, orgie no borra archivos para siempre."
+            fi
         else
             echo ""
-            echo "No se eliminó ningún archivo."
+            echo "No se tocó ningún archivo."
         fi
         echo ""
     fi
@@ -713,9 +758,320 @@ subs_count() {
     echo "${#found[@]}"
 }
 
-# Guarda usuario y contraseña de OpenSubtitles en un archivo que solo lee tu usuario.
+# detect_pkg_manager: apt, pacman, dnf o vacío si no reconoce la distro
+detect_pkg_manager() {
+    local id="" like=""
+    if [[ -r "$OS_RELEASE" ]]; then
+        id="$(. "$OS_RELEASE"; echo "${ID:-}")"
+        like="$(. "$OS_RELEASE"; echo "${ID_LIKE:-}")"
+    fi
+    case " $id $like " in
+        *" debian "*|*" ubuntu "*) echo apt; return ;;
+        *" arch "*)                echo pacman; return ;;
+        *" fedora "*|*" rhel "*)   echo dnf; return ;;
+    esac
+    # Por si la distro no se anuncia como derivada (por ejemplo Omarchy)
+    if command -v apt-get >/dev/null 2>&1; then echo apt
+    elif command -v pacman >/dev/null 2>&1; then echo pacman
+    elif command -v dnf >/dev/null 2>&1; then echo dnf
+    fi
+}
+
+# ensure_tools <herramienta...>: comprueba subliminal, yt-dlp y ffprobe. Si falta
+# alguna, enseña qué se ejecutaría, pregunta, y la instala solo si dices que sí.
+# Los programas de Python van con pipx (sin sudo); ffmpeg y pipx, con el gestor
+# de paquetes de la distro (esos sí piden sudo).
+ensure_tools() {
+    local missing=() t
+    for t in "$@"; do
+        command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+    done
+    [[ ${#missing[@]} -eq 0 ]] && return 0
+
+    local pm sys_pkgs=() pipx_pkgs=() need_pipx=0
+    pm="$(detect_pkg_manager)"
+
+    for t in "${missing[@]}"; do
+        case "$t" in
+            ffprobe)
+                case "$pm" in
+                    dnf) sys_pkgs+=(ffmpeg-free) ;;
+                    *)   sys_pkgs+=(ffmpeg) ;;
+                esac ;;
+            gio)
+                case "$pm" in
+                    apt) sys_pkgs+=(libglib2.0-bin) ;;
+                    *)   sys_pkgs+=(glib2) ;;
+                esac ;;
+            subliminal|yt-dlp)
+                pipx_pkgs+=("$t")
+                need_pipx=1 ;;
+        esac
+    done
+
+    if [[ $need_pipx -eq 1 ]] && ! command -v pipx >/dev/null 2>&1; then
+        case "$pm" in
+            pacman) sys_pkgs+=(python-pipx) ;;
+            *)      sys_pkgs+=(pipx) ;;
+        esac
+    fi
+
+    echo "      Faltan estas herramientas: ${missing[*]}"
+    [[ " ${missing[*]} " == *" gio "* ]] && echo "      (gio es lo que permite mandar archivos a la papelera en vez de borrarlos)"
+    echo ""
+
+    local SUDO=(sudo) pre=""
+    if [[ $EUID -eq 0 ]]; then
+        SUDO=()
+    else
+        pre="sudo "
+    fi
+
+    local cmds=()
+    if [[ ${#sys_pkgs[@]} -gt 0 ]]; then
+        case "$pm" in
+            apt)    cmds+=("${pre}apt update" "${pre}apt install ${sys_pkgs[*]}") ;;
+            pacman) cmds+=("${pre}pacman -S --needed ${sys_pkgs[*]}") ;;
+            dnf)    cmds+=("${pre}dnf install ${sys_pkgs[*]}") ;;
+            *)
+                echo "      No reconozco el gestor de paquetes de tu distro." >&2
+                echo "      Instala a mano estos paquetes del sistema y vuelve a ejecutar orgie: ${sys_pkgs[*]}" >&2
+                [[ ${#pipx_pkgs[@]} -gt 0 ]] && echo "      Después: pipx install ${pipx_pkgs[*]}" >&2
+                exit 1 ;;
+        esac
+    fi
+    for t in "${pipx_pkgs[@]}"; do
+        cmds+=("pipx install $t")
+    done
+
+    echo "      Se ejecutarían estos comandos, en este orden:"
+    local c
+    for c in "${cmds[@]}"; do
+        echo "        $c"
+    done
+    echo ""
+    if [[ ${#sys_pkgs[@]} -gt 0 ]]; then
+        echo "      Los de apt, pacman o dnf instalan paquetes del sistema y piden tu contraseña."
+        echo "      Los de pipx se instalan solo para tu usuario, sin sudo."
+        echo ""
+    fi
+
+    if [[ -n "$pre" && ${#sys_pkgs[@]} -gt 0 ]] && ! command -v sudo >/dev/null 2>&1; then
+        echo "Error: no existe 'sudo' en este equipo. Ejecuta esos comandos como administrador." >&2
+        exit 1
+    fi
+
+    local ans
+    read -r -p "      ¿Instalarlas ahora? (s/n): " ans
+    echo ""
+    if [[ "$ans" != "s" && "$ans" != "S" ]]; then
+        echo "      No se instaló nada. Cuando las tengas, vuelve a ejecutar orgie."
+        exit 1
+    fi
+
+    if [[ ${#sys_pkgs[@]} -gt 0 ]]; then
+        case "$pm" in
+            apt)
+                { ${SUDO[@]+"${SUDO[@]}"} apt update && ${SUDO[@]+"${SUDO[@]}"} apt install "${sys_pkgs[@]}"; } \
+                    || { echo "Error: falló la instalación de paquetes del sistema." >&2; exit 1; } ;;
+            pacman)
+                ${SUDO[@]+"${SUDO[@]}"} pacman -S --needed "${sys_pkgs[@]}" \
+                    || { echo "Error: falló la instalación de paquetes del sistema." >&2; exit 1; } ;;
+            dnf)
+                ${SUDO[@]+"${SUDO[@]}"} dnf install "${sys_pkgs[@]}" \
+                    || { echo "Error: falló la instalación de paquetes del sistema." >&2; exit 1; } ;;
+        esac
+    fi
+
+    # pipx deja los programas en ~/.local/bin; se añade solo a esta ejecución
+    export PATH="$HOME/.local/bin:$PATH"
+
+    for t in "${pipx_pkgs[@]}"; do
+        pipx install "$t" || { echo "Error: falló 'pipx install $t'." >&2; exit 1; }
+    done
+
+    for t in "${missing[@]}"; do
+        if ! command -v "$t" >/dev/null 2>&1; then
+            echo "Error: '$t' sigue sin aparecer. Abre una terminal nueva y vuelve a ejecutar orgie." >&2
+            exit 1
+        fi
+    done
+    echo ""
+    echo "      Instalado."
+    echo ""
+}
+
+# clean_auto_srt <archivo>: limpia un .srt de subtítulos automáticos de YouTube.
+# Esos subtítulos repiten cada línea en el cue siguiente y traen cues de 10 ms:
+# se descartan los cues muy cortos y las líneas que ya salían en el cue anterior.
+clean_auto_srt() {
+    awk '
+    function ms(t,   a) { split(t, a, /[:,]/); return ((a[1] * 60 + a[2]) * 60 + a[3]) * 1000 + a[4] }
+    { sub(/\r$/, ""); L[NR] = $0 }
+    END {
+        n = 0
+        for (i = 1; i <= NR; i++)
+            if (L[i] ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9] --> [0-9][0-9]:[0-9][0-9]:[0-9][0-9],[0-9][0-9][0-9]/) T[++n] = i
+        out = 0; pcnt = 0
+        for (k = 1; k <= n; k++) {
+            from = T[k] + 1
+            to = (k < n) ? T[k + 1] - 1 : NR
+            if (k < n && L[to] ~ /^[0-9]+$/) to--
+            split(L[T[k]], p, " --> ")
+            start = p[1]; end = substr(p[2], 1, 12)
+            cnt = 0; delete cur
+            for (i = from; i <= to; i++) {
+                line = L[i]
+                gsub(/^[ \t]+|[ \t]+$/, "", line)
+                if (line != "") cur[++cnt] = line
+            }
+            if (ms(end) - ms(start) < 100) continue
+            shown = 0; delete nw
+            for (j = 1; j <= cnt; j++) {
+                dup = 0
+                for (q = 1; q <= pcnt; q++) if (cur[j] == prevl[q]) dup = 1
+                if (!dup) nw[++shown] = cur[j]
+            }
+            pcnt = cnt; delete prevl
+            for (j = 1; j <= cnt; j++) prevl[j] = cur[j]
+            if (shown == 0) continue
+            out++
+            printf "%d\n%s --> %s\n", out, start, end
+            for (j = 1; j <= shown; j++) print nw[j]
+            print ""
+        }
+    }' "$1"
+}
+
+# youtube_stage <video>: busca el video en YouTube por título y duración y baja su
+# subtítulo. Devuelve 0 si lo guardó; en STAGE_NOTE queda el resultado.
+youtube_stage() {
+    local video="$1" base="${1%.*}" name query local_dur list id="" cid cdur ctitle match_title=""
+    local url info manual auto want basel code="" kind="" cand tmp flag sub_file
+
+    name="${video##*/}"
+    name="${name%.*}"
+
+    local_dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 -- "$video" 2>/dev/null | head -n 1)"
+    if ! [[ "$local_dur" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        STAGE_NOTE="no se pudo leer la duración del video"
+        return 1
+    fi
+
+    # Título limpio: sin guiones bajos, puntos, emojis ni signos
+    if [[ "$(locale charmap 2>/dev/null)" == "UTF-8" ]]; then
+        query="$(printf '%s' "$name" | tr '._' '  ' | sed -E 's/[^[:alnum:] ]+/ /g; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+    elif [[ "$(LC_ALL=C.UTF-8 locale charmap 2>/dev/null)" == "UTF-8" ]]; then
+        query="$(printf '%s' "$name" | tr '._' '  ' | LC_ALL=C.UTF-8 sed -E 's/[^[:alnum:] ]+/ /g; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+    else
+        query="$(printf '%s' "$name" | tr '._' '  ' | sed -E 's/[[:punct:]]+/ /g; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+    fi
+    if [[ -z "$query" ]]; then
+        STAGE_NOTE="el nombre no tiene texto que buscar"
+        return 1
+    fi
+
+    list="$(yt-dlp --flat-playlist --no-warnings --print '%(id)s|%(duration)s|%(title)s' "ytsearch8:$query" 2>/dev/null)"
+    if [[ -z "$list" ]]; then
+        STAGE_NOTE="no se pudo consultar YouTube (o sin resultados)"
+        return 1
+    fi
+
+    # Solo vale un resultado cuya duración coincida con la de tu archivo
+    while IFS='|' read -r cid cdur ctitle; do
+        [[ "$cdur" =~ ^[0-9]+(\.[0-9]+)?$ ]] || continue
+        if awk -v a="$cdur" -v b="$local_dur" -v t="$YT_TOLERANCE" 'BEGIN { d = a - b; if (d < 0) d = -d; exit !(d <= t) }'; then
+            id="$cid"
+            match_title="$ctitle"
+            break
+        fi
+    done <<< "$list"
+
+    if [[ -z "$id" ]]; then
+        STAGE_NOTE="ningún resultado coincide en duración (±${YT_TOLERANCE} s)"
+        return 1
+    fi
+
+    url="https://www.youtube.com/watch?v=$id"
+    info="$(yt-dlp --skip-download --no-warnings --list-subs -- "$url" 2>/dev/null)"
+
+    manual="$(printf '%s\n' "$info" | awk '
+        /^\[info\] Available subtitles for/ { m = 1; next }
+        /^\[info\]/ { m = 0 }
+        m && NF && $1 != "Language" { print $1 }')"
+    auto="$(printf '%s\n' "$info" | awk '
+        /^\[info\] Available automatic captions for/ { a = 1; next }
+        /^\[info\]/ { a = 0 }
+        a && NF && $1 != "Language" { print $1 }')"
+
+    want="$SUB_LANG"
+    basel="${want%%-*}"
+
+    # 1) subtítulo manual; 2) automático original; 3) automático traducido
+    while IFS= read -r cand; do
+        [[ -n "$cand" ]] || continue
+        if printf '%s\n' "$manual" | grep -qxF -- "$cand"; then
+            code="$cand"
+            kind="manual"
+            break
+        fi
+    done < <(printf '%s\n' "$want"; printf '%s\n' "$manual" | grep -E "^${basel}(-|\$)")
+
+    if [[ -z "$code" ]]; then
+        for cand in "$want-orig" "$basel-orig" "$want" "$basel"; do
+            if printf '%s\n' "$auto" | grep -qxF -- "$cand"; then
+                code="$cand"
+                kind="auto"
+                [[ "$cand" == *-orig ]] && kind="auto-orig"
+                break
+            fi
+        done
+    fi
+
+    if [[ -z "$code" ]]; then
+        STAGE_NOTE="el video de YouTube no tiene subtítulos en '$SUB_LANG'"
+        return 1
+    fi
+
+    tmp="$(mktemp -d)" || { STAGE_NOTE="no se pudo crear una carpeta temporal"; return 1; }
+    flag="--write-subs"
+    [[ "$kind" != "manual" ]] && flag="--write-auto-subs"
+
+    yt-dlp --skip-download --no-warnings "$flag" --sub-langs "$code" --convert-subs srt \
+        -P "$tmp" -o "sub" -- "$url" >/dev/null 2>&1
+    sub_file="$tmp/sub.$code.srt"
+
+    if [[ ! -s "$sub_file" ]]; then
+        rm -rf "$tmp"
+        STAGE_NOTE="no se pudo bajar el subtítulo"
+        return 1
+    fi
+
+    if [[ "$kind" != "manual" ]]; then
+        clean_auto_srt "$sub_file" > "$tmp/limpio.srt"
+        [[ -s "$tmp/limpio.srt" ]] && mv -f "$tmp/limpio.srt" "$sub_file"
+    fi
+
+    if ! mv -n -- "$sub_file" "$base.$SUB_LANG.srt"; then
+        rm -rf "$tmp"
+        STAGE_NOTE="no se pudo guardar el subtítulo"
+        return 1
+    fi
+    rm -rf "$tmp"
+
+    case "$kind" in
+        manual)    STAGE_NOTE="descargado (manual)" ;;
+        auto-orig) STAGE_NOTE="descargado (automático)" ;;
+        *)         STAGE_NOTE="descargado (traducción automática)" ;;
+    esac
+    STAGE_NOTE="$STAGE_NOTE, de \"${match_title:0:50}\""
+    return 0
+}
+
+# Guarda una cuenta de OpenSubtitles en un archivo que solo lee tu usuario.
+# save_login <archivo> <usuario> <contraseña>
 save_login() {
-    local u="$1" p="$2"
+    local file="$1" u="$2" p="$3"
 
     # El archivo es TOML: hay que escapar barras y comillas
     u="${u//\\/\\\\}"
@@ -727,15 +1083,16 @@ save_login() {
 
     (
         umask 077
-        printf '[provider.opensubtitlescom]\nusername = "%s"\npassword = "%s"\n' "$u" "$p" > "$CONF_FILE"
+        printf '[provider.opensubtitlescom]\nusername = "%s"\npassword = "%s"\n' "$u" "$p" > "$file"
     ) || return 1
 
-    chmod 600 "$CONF_FILE"
+    chmod 600 "$file"
 }
 
-# Pide usuario y contraseña (la contraseña no se ve al escribirla) y los guarda.
+# Pide usuario y contraseña (la contraseña no se ve al escribirla) y los guarda
+# en <archivo>. Devuelve 0 si quedó guardada.
 ask_login() {
-    local user pass
+    local target="$1" user pass f
 
     read -r -p "      Usuario de OpenSubtitles (vacío para cancelar): " user
     [[ -n "$user" ]] || return 1
@@ -749,13 +1106,20 @@ ask_login() {
         return 1
     fi
 
-    if ! save_login "$user" "$pass"; then
-        echo "      No se pudo guardar la sesión en $CONF_DIR." >&2
+    for f in "${ACCOUNTS[@]}"; do
+        if [[ "$f" != "$target" && "$(account_username "$f")" == "$user" ]]; then
+            echo "      Esa cuenta ya está guardada." >&2
+            return 1
+        fi
+    done
+
+    if ! save_login "$target" "$user" "$pass"; then
+        echo "      No se pudo guardar la cuenta en $CONF_DIR." >&2
         return 1
     fi
 
-    SUB_CONF="$CONF_FILE"
-    echo "      Sesión guardada en $CONF_DIR"
+    SUB_CONF="$target"
+    echo "      Cuenta guardada en $CONF_DIR"
     return 0
 }
 
@@ -768,7 +1132,7 @@ run_stage() {
         args+=(-p "$site")
     done
 
-    STAGE_OUT="$(subliminal --debug --cache-dir "$CACHE_DIR" -c "$SUB_CONF" \
+    STAGE_OUT="$(subliminal --debug --cache-dir "$RUN_CACHE" -c "$SUB_CONF" \
         download -l "$SUB_LANG" "${args[@]}" \
         -r hash -r metadata -C n,hi,fo -- "$2" 2>&1)"
     STAGE_RC=$?
@@ -854,37 +1218,42 @@ mode_subs() {
     # --- 2. Herramientas ---
     echo "[2/5] Comprobando herramientas..."
 
-    if ! command -v subliminal >/dev/null 2>&1; then
-        echo "Error: no se encontró 'subliminal' (solo hace falta para este modo)." >&2
-        echo "Instálalo una vez, sin sudo, con:" >&2
-        echo "  pipx install subliminal" >&2
-        echo "Si no tienes pipx:" >&2
-        echo "  sudo apt update && sudo apt install pipx   (Ubuntu 22.04 o más nuevo, Debian, Kubuntu)" >&2
-        echo "  sudo pacman -S python-pipx                 (Arch/Omarchy)" >&2
-        echo "Si apt sigue sin encontrar pipx, tu Ubuntu es demasiado viejo (hace falta 22.04 o más nuevo)." >&2
-        exit 1
-    fi
+    local needed=(subliminal)
+    [[ $YOUTUBE -eq 1 ]] && needed=(yt-dlp ffprobe)
+    ensure_tools "${needed[@]}"
 
-    local sub_help
-    sub_help="$(subliminal download --help 2>/dev/null)"
-    if [[ "$sub_help" != *"--subtitle-categories"* ]]; then
-        echo "Error: tu 'subliminal' es muy antiguo. Actualízalo con: pipx upgrade subliminal" >&2
-        exit 1
+    if [[ $YOUTUBE -eq 1 ]]; then
+        echo "      Disponible: yt-dlp $(yt-dlp --version 2>/dev/null | head -n 1), ffprobe"
+    else
+        local sub_help
+        sub_help="$(subliminal download --help 2>/dev/null)"
+        if [[ "$sub_help" != *"--subtitle-categories"* ]]; then
+            echo "Error: tu 'subliminal' es muy antiguo. Actualízalo con: pipx upgrade subliminal" >&2
+            exit 1
+        fi
+        echo "      Disponible: $(subliminal --version 2>/dev/null | head -n 1)"
     fi
-
-    echo "      Disponible: $(subliminal --version 2>/dev/null | head -n 1)"
     echo ""
 
     # --- 3. Cuenta de OpenSubtitles ---
     echo "[3/5] Cuenta de OpenSubtitles..."
 
     SUB_CONF=/dev/null
+    ACCT=0
+    RELOGIN_DONE=0
     local logged=0 ans
+    load_accounts
 
-    if [[ -f "$CONF_FILE" ]]; then
-        SUB_CONF="$CONF_FILE"
+    if [[ $YOUTUBE -eq 1 ]]; then
+        echo "      No hace falta con --youtube: no se consultan OpenSubtitles ni las otras fuentes de películas."
+    elif [[ ${#ACCOUNTS[@]} -gt 0 ]]; then
+        SUB_CONF="${ACCOUNTS[0]}"
         logged=1
-        echo "      Hay una sesión guardada en $CONF_DIR"
+        if [[ ${#ACCOUNTS[@]} -eq 1 ]]; then
+            echo "      Hay una cuenta guardada en $CONF_DIR"
+        else
+            echo "      Hay ${#ACCOUNTS[@]} cuentas guardadas en $CONF_DIR"
+        fi
     else
         cat <<EOF
       OpenSubtitles es la fuente de subtítulos más completa, pero necesita tu
@@ -902,7 +1271,8 @@ EOF
         read -r -p "      ¿Iniciar sesión con tu cuenta de OpenSubtitles? (s/n): " ans
         echo ""
         if [[ "$ans" == "s" || "$ans" == "S" ]]; then
-            if ask_login; then
+            if ask_login "$CONF_FILE"; then
+                ACCOUNTS=("$CONF_FILE")
                 logged=1
             else
                 echo "      No se guardó ninguna sesión; se usarán solo las otras fuentes."
@@ -950,26 +1320,33 @@ EOF
 
     # --- 5. Descargar ---
     echo "[5/5] Buscando subtítulos ($SUB_LANG)..."
-    local order="subt.is y subtitulamos.tv"
-    [[ $logged -eq 1 ]] && order="OpenSubtitles, $order"
-    echo "      Orden: $order, y al final BSPlayer."
-    echo "      BSPlayer no usa conexión cifrada, por eso solo se prueba si los demás no tienen nada."
+    if [[ $YOUTUBE -eq 1 ]]; then
+        echo "      Cada video se busca en YouTube por título y duración."
+        echo "      No se consultan OpenSubtitles ni las otras fuentes de películas."
+    else
+        local order="subt.is y subtitulamos.tv"
+        [[ $logged -eq 1 ]] && order="OpenSubtitles, $order"
+        echo "      Orden: $order, y al final BSPlayer."
+        echo "      BSPlayer no usa conexión cifrada, por eso solo se prueba si los demás no tienen nada."
+    fi
     echo ""
 
     # Primero los sitios con conexión cifrada, BSPlayer el último
     local stages=() labels=()
-    if [[ $logged -eq 1 ]]; then
-        stages+=("opensubtitlescom")
-        labels+=("OpenSubtitles")
+    if [[ $YOUTUBE -eq 0 ]]; then
+        if [[ $logged -eq 1 ]]; then
+            stages+=("opensubtitlescom")
+            labels+=("OpenSubtitles")
+        fi
+        stages+=("subtis subtitulamos")
+        labels+=("subt.is / subtitulamos")
+        stages+=("bsplayer")
+        labels+=("BSPlayer")
+        RUN_CACHE="$(mktemp -d)"
+        trap 'rm -rf "${RUN_CACHE:-}"' EXIT
     fi
-    stages+=("subtis subtitulamos")
-    labels+=("subt.is / subtitulamos")
-    stages+=("bsplayer")
-    labels+=("BSPlayer")
 
-    mkdir -p -m 700 "$CACHE_DIR" 2>/dev/null
-
-    local got=0 skipped=0 notfound=0 i=0 s video found skip_os=0 relogin_done=0
+    local got=0 skipped=0 notfound=0 i=0 s video found skip_os=0
 
     for video in "${videos[@]}"; do
         i=$((i + 1))
@@ -988,42 +1365,50 @@ EOF
         found=0
 
         for ((s = 0; s < ${#stages[@]}; s++)); do
-            if [[ "${stages[s]}" == "opensubtitlescom" && $skip_os -eq 1 ]]; then
+            if [[ "${stages[s]}" == "opensubtitlescom" ]]; then
+                [[ $skip_os -eq 1 ]] && continue
+
+                # Con la cuenta actual; si se agota, se prueba la siguiente
+                while :; do
+                    printf '      %-24s ' "$(os_label)"
+                    if try_stage "${stages[s]}" "$video"; then
+                        echo "$STAGE_NOTE"
+                        found=1
+                        break
+                    fi
+                    echo "$STAGE_NOTE"
+
+                    if [[ $STAGE_LIMIT -eq 1 ]]; then
+                        next_account && continue
+                        skip_os=1
+                    elif [[ $STAGE_AUTH_FAIL -eq 1 ]]; then
+                        rejected_account && continue
+                        skip_os=1
+                    elif [[ $STAGE_AGENT -eq 1 ]]; then
+                        skip_os=1
+                    fi
+                    break
+                done
+                [[ $found -eq 1 ]] && break
                 continue
             fi
 
             printf '      %-24s ' "${labels[s]}"
-
             if try_stage "${stages[s]}" "$video"; then
                 echo "$STAGE_NOTE"
                 found=1
                 break
             fi
             echo "$STAGE_NOTE"
-
-            if [[ "${stages[s]}" == "opensubtitlescom" ]]; then
-                if [[ $STAGE_LIMIT -eq 1 || $STAGE_AGENT -eq 1 ]]; then
-                    skip_os=1
-                elif [[ $STAGE_AUTH_FAIL -eq 1 ]]; then
-                    skip_os=1
-                    if [[ $relogin_done -eq 0 ]]; then
-                        relogin_done=1
-                        read -r -p "      ¿Volver a escribir tus datos de OpenSubtitles? (s/n): " ans
-                        if [[ "$ans" == "s" || "$ans" == "S" ]] && ask_login; then
-                            skip_os=0
-                            printf '      %-24s ' "${labels[s]}"
-                            if try_stage "${stages[s]}" "$video"; then
-                                echo "$STAGE_NOTE"
-                                found=1
-                                break
-                            fi
-                            echo "$STAGE_NOTE"
-                            [[ $STAGE_AUTH_FAIL -eq 1 || $STAGE_LIMIT -eq 1 || $STAGE_AGENT -eq 1 ]] && skip_os=1
-                        fi
-                    fi
-                fi
-            fi
         done
+
+        if [[ $found -eq 0 && $YOUTUBE -eq 1 ]]; then
+            printf '      %-24s ' "YouTube"
+            if youtube_stage "$video"; then
+                found=1
+            fi
+            echo "$STAGE_NOTE"
+        fi
 
         if [[ $found -eq 1 ]]; then
             got=$((got + 1))
@@ -1443,27 +1828,34 @@ mode_dupes() {
         echo ""
     done
 
+    if ! ensure_trash; then
+        echo ""
+        echo "No se borró nada: sin papelera disponible, orgie no borra archivos para siempre."
+        return 0
+    fi
+    echo ""
+
     local confirm
-    read -r -p "¿Borrar las ${#del_list[@]} copias? Esto no se puede deshacer. (s/n): " confirm
+    read -r -p "¿Mandar a la papelera las ${#del_list[@]} copias? (s/n): " confirm
     if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
         echo ""
-        echo "No se borró nada."
+        echo "No se tocó nada."
         return 0
     fi
     echo ""
 
     local deleted=0
     for file in "${del_list[@]}"; do
-        if rm -f -- "$file"; then
+        if send_to_trash "$file"; then
             deleted=$((deleted + 1))
         else
-            echo "      No se pudo borrar '${file##*/}'." >&2
+            echo "      No se pudo mandar a la papelera '${file##*/}' (no se borró)." >&2
         fi
     done
 
     banner "Proceso terminado"
-    echo "  Copias borradas:   $deleted"
-    echo "  Espacio liberado:  $(human_size "$del_bytes")"
+    echo "  Copias enviadas a la papelera:  $deleted"
+    echo "  Espacio que se liberará al vaciarla:  $(human_size "$del_bytes")"
     echo ""
 }
 
@@ -1803,6 +2195,1013 @@ mode_splitseries() {
 }
 
 # ============================================================
+#  Papelera (en vez de borrar para siempre)
+# ============================================================
+
+# trash_cmd: gio o trash-put, el que haya (vacío si no hay ninguno)
+trash_cmd() {
+    if command -v gio >/dev/null 2>&1; then
+        echo gio
+    elif command -v trash-put >/dev/null 2>&1; then
+        echo trash-put
+    fi
+}
+
+# send_to_trash <archivo>: lo manda a la papelera. Si no puede, no lo borra.
+send_to_trash() {
+    case "$(trash_cmd)" in
+        gio)       gio trash -- "$1" 2>/dev/null ;;
+        trash-put) trash-put -- "$1" 2>/dev/null ;;
+        *)         return 1 ;;
+    esac
+}
+
+# ensure_trash: comprueba que hay papelera; si no, ofrece instalar gio.
+# Devuelve 1 si no se puede usar (nunca se borra para siempre como alternativa).
+ensure_trash() {
+    [[ -n "$(trash_cmd)" ]] && return 0
+    echo "      No hay ninguna herramienta de papelera instalada."
+    ( ensure_tools gio ) || return 1
+    [[ -n "$(trash_cmd)" ]]
+}
+
+# ============================================================
+#  Comprobación rápida de comprimidos (modo --games)
+# ============================================================
+
+# archive_ok <archivo>: comprueba que un .zip o .rar se puede abrir. Solo lee
+# el índice del archivo (tarda segundos, aunque pese gigas) y no descomprime
+# nada: detecta descargas cortadas o dañadas. Un fallo en mitad de los datos
+# se descubre al extraer, como siempre.
+archive_ok() {
+    local archive="$1" ext rc
+    ext="${archive##*.}"
+    ext="${ext,,}"
+    case "$ext" in
+        rar)
+            if [[ $HAVE_UNRAR -eq 1 ]]; then
+                unrar l -p- -- "$archive" </dev/null >/dev/null 2>&1
+                rc=$?
+            elif [[ $HAVE_7Z -eq 1 ]]; then
+                7z l -- "$archive" </dev/null >/dev/null 2>&1
+                rc=$?
+            else
+                return 0
+            fi ;;
+        zip)
+            if [[ $HAVE_UNZIP -eq 1 ]]; then
+                unzip -l -- "$archive" </dev/null >/dev/null 2>&1
+                rc=$?
+            elif [[ $HAVE_7Z -eq 1 ]]; then
+                7z l -- "$archive" </dev/null >/dev/null 2>&1
+                rc=$?
+            else
+                return 0
+            fi ;;
+        *) return 0 ;;
+    esac
+    # 0 es correcto y 1 es solo un aviso (unzip y unrar)
+    [[ $rc -le 1 ]]
+}
+
+# ============================================================
+#  Modo --clean
+# ============================================================
+
+# clean_base <nombre sin extensión>: quita la basura típica de las descargas.
+# Devuelve el nombre limpio, o el mismo si no hay nada que quitar.
+clean_base() {
+    local b="$1" prev="" n=0
+    local quality='2160p|1080p|720p|480p|4k|bluray|brrip|web-?dl|webrip|hdrip|dvdrip|x26[45]|h\.?26[45]|hevc|aac|ac3|dts|10bit'
+
+    # Nombres de Telegram y de cámaras: se dejan como están
+    if [[ "$b" =~ ^video_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}( \([0-9]+\))?$ ]] \
+        || [[ "$b" =~ ^(VID|IMG|PXL|MOV)_[0-9] ]]; then
+        printf '%s' "$b"
+        return
+    fi
+
+    # Extensión de video repetida dentro del nombre ("3461_9.mp4 at Streamtape.com")
+    b="$(printf '%s' "$b" | sed -E 's/\.(mp4|mkv|avi|mov|webm|m4v|ts|flv|wmv)([ ._-]|$)/\2/Ig')"
+
+    # Dominios ("at Streamtape.com", "www.sitio.com") y usuarios de canales (@canal)
+    b="$(printf '%s' "$b" | sed -E 's/ at [a-z0-9-]+\.(com|net|org|tv|io|me|cc|co|info)//Ig; s/www\.[a-z0-9.-]+\.[a-z]{2,}//Ig; s/@[A-Za-z0-9_]+//g')"
+
+    # Etiquetas entre corchetes o paréntesis que solo hablan de calidad
+    b="$(printf '%s' "$b" | sed -E "s/[[(][^])]*($quality)[^])]*[])]//Ig")"
+
+    # Palabras de sitios
+    b="$(printf '%s' "$b" | sed -E 's/Sub Espa.{1,2}ol//Ig; s/AnimeFLV//Ig; s/Streamtape//Ig')"
+
+    # Calidad, códec y fuente sueltos; se repite porque suelen venir seguidos
+    while [[ "$b" != "$prev" && $n -lt 6 ]]; do
+        prev="$b"
+        n=$((n + 1))
+        b="$(printf '%s' "$b" | sed -E "s/(^|[ ._-])($quality)([ ._-]|\$)/\\1\\3/Ig")"
+    done
+
+    # Separadores sobrantes al principio y al final, y espacios dobles
+    b="$(printf '%s' "$b" | sed -E 's/ +/ /g; s/^([ ._-]|—|–)+//; s/([ ._-]|—|–)+$//')"
+
+    # Nombres tipo "Pelicula.Nombre.2020": puntos y guiones bajos pasan a espacios,
+    # solo si no tienen espacios y llevan alguna palabra de letras
+    if [[ "$b" != *" "* && "$b" =~ (^|[._])[A-Za-z]{3,}([._]|$) ]]; then
+        b="${b//[._]/ }"
+        b="$(printf '%s' "$b" | sed -E 's/ +/ /g; s/^ +//; s/ +$//')"
+    fi
+
+    if [[ -z "$b" ]]; then
+        printf '%s' "$1"
+    else
+        printf '%s' "$b"
+    fi
+}
+
+mode_clean() {
+    banner "Limpiar nombres"
+
+    echo "[1/4] Comprobando carpeta de trabajo..."
+    resolve_target
+
+    echo "[2/4] Buscando videos y calculando nombres limpios..."
+
+    local -A allowed=()
+    local ext_list e f name ext base newbase
+    IFS=',' read -r -a ext_list <<< "$EXTS"
+    for e in "${ext_list[@]}"; do
+        e="${e#.}"
+        e="${e,,}"
+        [[ -n "$e" ]] && allowed["$e"]=1
+    done
+
+    local found=()
+    for f in "$TARGET_DIR"/*; do
+        [[ -f "$f" && ! -L "$f" ]] || continue
+        name="${f##*/}"
+        [[ "$name" == *.* ]] || continue
+        [[ "$name" == *$'\n'* ]] && continue
+        ext="${name##*.}"
+        ext="${ext,,}"
+        [[ -n "${allowed[$ext]:-}" ]] || continue
+        found+=("$name")
+    done
+
+    if [[ ${#found[@]} -eq 0 ]]; then
+        echo "      No se encontraron videos (extensiones: $EXTS) en '$TARGET_DIR'."
+        echo ""
+        return 0
+    fi
+
+    local sorted
+    mapfile -t sorted < <(printf '%s\n' "${found[@]}" | LC_ALL=C sort -V)
+
+    local cand_src=() cand_dst=() i key cur
+    local -A dst_count=()
+    for name in "${sorted[@]}"; do
+        ext="${name##*.}"
+        base="${name%.*}"
+        newbase="$(clean_base "$base")"
+        [[ -n "$newbase" && "$newbase" != "$base" ]] || continue
+        cand_src+=("$name")
+        cand_dst+=("$newbase.$ext")
+        key="$newbase.$ext"
+        cur="${dst_count[$key]:-0}"
+        dst_count[$key]=$((cur + 1))
+    done
+
+    echo "      Videos revisados: ${#sorted[@]}"
+    echo ""
+
+    # Se descartan los cambios que chocarían con otro archivo
+    local -A in_src=()
+    for name in "${cand_src[@]}"; do in_src["$name"]=1; done
+
+    SRC=()
+    DST=()
+    local skipped=()
+    for ((i = 0; i < ${#cand_src[@]}; i++)); do
+        key="${cand_dst[i]}"
+        if [[ ${dst_count[$key]} -gt 1 ]]; then
+            skipped+=("${cand_src[i]}  (varios archivos quedarían con el mismo nombre)")
+        elif [[ -e "$TARGET_DIR/${cand_dst[i]}" && -z "${in_src[${cand_dst[i]}]:-}" ]]; then
+            skipped+=("${cand_src[i]}  (ya existe '${cand_dst[i]}')")
+        else
+            SRC+=("${cand_src[i]}")
+            DST+=("${cand_dst[i]}")
+        fi
+    done
+
+    if [[ ${#SRC[@]} -eq 0 ]]; then
+        echo "      No hay nada que limpiar."
+        if [[ ${#skipped[@]} -gt 0 ]]; then
+            echo ""
+            echo "      Se omiten por posibles choques:"
+            for name in "${skipped[@]}"; do echo "        $name"; done
+        fi
+        echo ""
+        return 0
+    fi
+
+    # Los subtítulos con el mismo nombre que un video cambian con él
+    local nvid=${#SRC[@]} S_SRC=() S_DST=() sub rest
+    local -A claimed=() is_video=()
+    for name in "${found[@]}"; do is_video["$name"]=1; done
+    for ((i = 0; i < nvid; i++)); do
+        base="${SRC[i]%.*}"
+        newbase="${DST[i]%.*}"
+        while IFS= read -r sub; do
+            [[ -n "$sub" ]] || continue
+            sub="${sub##*/}"
+            [[ -z "${claimed[$sub]:-}" && -z "${is_video[$sub]:-}" ]] || continue
+            rest="${sub#"$base".}"
+            if [[ -e "$TARGET_DIR/$newbase.$rest" ]]; then
+                skipped+=("$sub  (ya existe '$newbase.$rest')")
+                continue
+            fi
+            claimed["$sub"]=1
+            S_SRC+=("$sub")
+            S_DST+=("$newbase.$rest")
+        done < <(subtitle_companions "$TARGET_DIR/$base")
+    done
+
+    echo "[3/4] Vista previa (todavía no se ha tocado nada)..."
+    echo ""
+
+    local shown=0 limit=30
+    for ((i = 0; i < nvid; i++)); do
+        if [[ $nvid -gt $limit && $shown -ge 20 ]]; then
+            echo "      ... y $((nvid - shown)) videos más"
+            break
+        fi
+        echo "      ${SRC[i]}"
+        echo "        -> ${DST[i]}"
+        shown=$((shown + 1))
+    done
+    echo ""
+    if [[ ${#S_SRC[@]} -gt 0 ]]; then
+        echo "      Además, ${#S_SRC[@]} subtítulos cambian de nombre con su video."
+        echo ""
+    fi
+    if [[ ${#skipped[@]} -gt 0 ]]; then
+        echo "      Se omiten por posibles choques:"
+        for name in "${skipped[@]}"; do echo "        $name"; done
+        echo ""
+    fi
+
+    local confirm sub_text=""
+    [[ ${#S_SRC[@]} -gt 0 ]] && sub_text=" y ${#S_SRC[@]} subtítulos"
+    read -r -p "¿Renombrar $nvid videos$sub_text? Esto no se puede deshacer. (s/n): " confirm
+    if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
+        echo ""
+        echo "No se cambió nada."
+        return 0
+    fi
+    echo ""
+
+    echo "[4/4] Renombrando..."
+    if [[ ${#S_SRC[@]} -gt 0 ]]; then
+        SRC+=("${S_SRC[@]}")
+        DST+=("${S_DST[@]}")
+    fi
+
+    local status=0
+    if apply_renames; then
+        echo "      Renombrado completado."
+    else
+        echo "      Terminó con errores (ver mensajes arriba)." >&2
+        status=1
+    fi
+
+    banner "Proceso terminado"
+    echo "  Videos renombrados: $nvid"
+    [[ ${#S_SRC[@]} -gt 0 ]] && echo "  Subtítulos renombrados: ${#S_SRC[@]}"
+    echo ""
+
+    return $status
+}
+
+# ============================================================
+#  Modo --sort
+# ============================================================
+
+mode_sort() {
+    banner "Ordenar por tipo"
+
+    echo "[1/3] Comprobando carpeta de trabajo..."
+    resolve_target
+
+    echo "[2/3] Clasificando archivos..."
+
+    # extensión -> carpeta
+    local -A cat_of=()
+    local x
+    for x in mp4 mkv avi mov webm m4v ts flv wmv mpg mpeg 3gp; do cat_of[$x]="Videos"; done
+    for x in mp3 flac wav ogg m4a aac opus wma; do cat_of[$x]="Musica"; done
+    for x in jpg jpeg png gif webp bmp svg heic tiff; do cat_of[$x]="Imagenes"; done
+    for x in pdf doc docx xls xlsx ppt pptx odt ods odp txt rtf epub csv; do cat_of[$x]="Documentos"; done
+    for x in zip rar 7z tar gz bz2 xz tgz iso; do cat_of[$x]="Comprimidos"; done
+    for x in deb rpm appimage exe msi apk dmg; do cat_of[$x]="Instaladores"; done
+
+    # Nombres con los que puede existir ya la carpeta (sin distinguir mayúsculas).
+    # Si existe alguna, se usa tal cual y no se crea otra.
+    local -A aliases=(
+        [Videos]="videos vídeos video"
+        [Musica]="musica música music"
+        [Imagenes]="imagenes imágenes images pictures"
+        [Documentos]="documentos documents"
+        [Comprimidos]="comprimidos archives"
+        [Instaladores]="instaladores installers programas"
+    )
+    local cats=(Videos Musica Imagenes Documentos Comprimidos Instaladores)
+    local -A dest_name=() is_new=()
+    local cat d dname lower a
+
+    for cat in "${cats[@]}"; do
+        dest_name[$cat]="$cat"
+        is_new[$cat]=1
+        for d in "$TARGET_DIR"/*/; do
+            [[ -d "$d" && ! -L "${d%/}" ]] || continue
+            dname="$(basename "$d")"
+            lower="${dname,,}"
+            for a in ${aliases[$cat]}; do
+                if [[ "$lower" == "$a" ]]; then
+                    dest_name[$cat]="$dname"
+                    is_new[$cat]=0
+                    break 2
+                fi
+            done
+        done
+    done
+
+    local files=() file_cat=() f name ext
+    local -A count=() sample=()
+    local untouched=0
+    for f in "$TARGET_DIR"/*; do
+        [[ -f "$f" && ! -L "$f" ]] || continue
+        name="${f##*/}"
+        [[ "$name" == *$'\n'* ]] && continue
+        ext=""
+        [[ "$name" == *.* ]] && ext="${name##*.}"
+        ext="${ext,,}"
+        cat="${cat_of[$ext]:-}"
+        if [[ -z "$cat" ]]; then
+            untouched=$((untouched + 1))
+            continue
+        fi
+        files+=("$name")
+        file_cat+=("$cat")
+        count[$cat]=$(( ${count[$cat]:-0} + 1 ))
+        if [[ -z "${sample[$cat]:-}" ]]; then
+            sample[$cat]="$name"
+        fi
+    done
+
+    echo "      Archivos que se pueden clasificar: ${#files[@]}"
+    echo "      Se quedan donde están (otro tipo): $untouched"
+    echo ""
+
+    if [[ ${#files[@]} -eq 0 ]]; then
+        echo "      No hay nada que mover."
+        echo ""
+        return 0
+    fi
+
+    # Un archivo con el mismo nombre en la carpeta de destino no se pisa
+    local i conflicts=()
+    local mv_src=() mv_dst=() mv_cat=()
+    for ((i = 0; i < ${#files[@]}; i++)); do
+        cat="${file_cat[i]}"
+        if [[ -e "$TARGET_DIR/${dest_name[$cat]}/${files[i]}" ]]; then
+            conflicts+=("${files[i]}  (ya hay uno igual en ${dest_name[$cat]}/)")
+            continue
+        fi
+        mv_src+=("${files[i]}")
+        mv_dst+=("${dest_name[$cat]}/${files[i]}")
+        mv_cat+=("$cat")
+    done
+
+    # Los subtítulos con el mismo nombre que un video viajan con él
+    local sub rest subs_n=0 base
+    local -A is_file=() claimed=()
+    for name in "${files[@]}"; do is_file["$name"]=1; done
+    local n_main=${#mv_src[@]}
+    for ((i = 0; i < n_main; i++)); do
+        [[ "${mv_cat[i]}" == "Videos" ]] || continue
+        base="${mv_src[i]%.*}"
+        while IFS= read -r sub; do
+            [[ -n "$sub" ]] || continue
+            sub="${sub##*/}"
+            [[ -z "${claimed[$sub]:-}" && -z "${is_file[$sub]:-}" ]] || continue
+            if [[ -e "$TARGET_DIR/${dest_name[Videos]}/$sub" ]]; then
+                conflicts+=("$sub  (ya hay uno igual en ${dest_name[Videos]}/)")
+                continue
+            fi
+            claimed["$sub"]=1
+            mv_src+=("$sub")
+            mv_dst+=("${dest_name[Videos]}/$sub")
+            mv_cat+=("Videos")
+            subs_n=$((subs_n + 1))
+        done < <(subtitle_companions "$TARGET_DIR/$base")
+    done
+
+    echo "[3/3] Plan (todavía no se ha tocado nada)..."
+    echo ""
+
+    for cat in "${cats[@]}"; do
+        [[ -n "${count[$cat]:-}" ]] || continue
+        if [[ ${is_new[$cat]} -eq 1 ]]; then
+            echo "      ${dest_name[$cat]}/   (carpeta nueva): ${count[$cat]} archivos, por ejemplo ${sample[$cat]}"
+        else
+            echo "      ${dest_name[$cat]}/   (ya existe, se añade ahí): ${count[$cat]} archivos, por ejemplo ${sample[$cat]}"
+        fi
+    done
+    echo ""
+    [[ $subs_n -gt 0 ]] && echo "      Además, $subs_n subtítulos viajan con su video." && echo ""
+    if [[ ${#conflicts[@]} -gt 0 ]]; then
+        echo "      Se omiten para no pisar nada:"
+        for name in "${conflicts[@]}"; do echo "        $name"; done
+        echo ""
+    fi
+
+    if [[ ${#mv_src[@]} -eq 0 ]]; then
+        echo "      No queda nada que mover."
+        echo ""
+        return 0
+    fi
+
+    local confirm
+    read -r -p "¿Mover ${#mv_src[@]} archivos a esas carpetas? (s/n): " confirm
+    if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
+        echo ""
+        echo "No se cambió nada."
+        return 0
+    fi
+    echo ""
+
+    local moved=0 failed=0 made=0
+    for ((i = 0; i < ${#mv_src[@]}; i++)); do
+        cat="${mv_cat[i]}"
+        if [[ ! -d "$TARGET_DIR/${dest_name[$cat]}" ]]; then
+            if ! mkdir "$TARGET_DIR/${dest_name[$cat]}" 2>/dev/null; then
+                echo "      No se pudo crear '${dest_name[$cat]}'; se omite '${mv_src[i]}'." >&2
+                failed=$((failed + 1))
+                continue
+            fi
+            made=$((made + 1))
+        fi
+        if mv -n -- "$TARGET_DIR/${mv_src[i]}" "$TARGET_DIR/${mv_dst[i]}" \
+            && [[ -e "$TARGET_DIR/${mv_dst[i]}" && ! -e "$TARGET_DIR/${mv_src[i]}" ]]; then
+            moved=$((moved + 1))
+        else
+            echo "      No se pudo mover '${mv_src[i]}'." >&2
+            failed=$((failed + 1))
+        fi
+    done
+
+    banner "Proceso terminado"
+    echo "  Archivos movidos:    $moved"
+    echo "  Carpetas creadas:    $made"
+    [[ $failed -gt 0 ]] && echo "  Con error:           $failed"
+    echo ""
+
+    [[ $failed -eq 0 ]]
+}
+
+# ============================================================
+#  Modo --group
+# ============================================================
+
+# norm_text <texto>: minúsculas, sin acentos y con todo lo que no sea letra o
+# número convertido en un espacio.
+norm_text() {
+    local s="$1" p
+    for p in "á:a" "à:a" "â:a" "ä:a" "ã:a" "Á:a" "À:a" "Â:a" "Ä:a" "Ã:a" \
+             "é:e" "è:e" "ê:e" "ë:e" "É:e" "È:e" "Ê:e" "Ë:e" \
+             "í:i" "ì:i" "î:i" "ï:i" "Í:i" "Ì:i" "Î:i" "Ï:i" \
+             "ó:o" "ò:o" "ô:o" "ö:o" "õ:o" "Ó:o" "Ò:o" "Ô:o" "Ö:o" "Õ:o" \
+             "ú:u" "ù:u" "û:u" "ü:u" "Ú:u" "Ù:u" "Û:u" "Ü:u" \
+             "ñ:n" "Ñ:n" "ç:c" "Ç:c"; do
+        s="${s//${p%%:*}/${p##*:}}"
+    done
+    s="${s,,}"
+    printf '%s' "$s" | LC_ALL=C sed -E 's/[^a-z0-9]+/ /g; s/^ //; s/ $//'
+}
+
+# strip_tags <nombre>: corta el nombre antes de la etiqueta de temporada o
+# episodio, o del año ("Serie S05E03" -> "Serie", "Peli (1972)" -> "Peli").
+strip_tags() {
+    printf '%s' "$1" | sed -E 's/[ ._-]+(S[0-9]{1,2}[ ._-]?E[0-9]{1,3}|[0-9]{1,2}x[0-9]{1,3}|(Temporada|Season|Episodio|Episode|Cap|Capitulo|Ep)[ ._-]*[0-9]+|\(?(19|20)[0-9]{2}\)?)([ ._-].*)?$//I'
+}
+
+# common_title <nombre...>: las palabras iniciales que comparten todos los
+# nombres, ya limpios y sin etiquetas. Vacío si no comparten ninguna.
+common_title() {
+    local nm cur i n=0 started=0
+    local -a base_words=() words=()
+    for nm in "$@"; do
+        cur="$(strip_tags "$(clean_base "$nm")")"
+        read -r -a words <<< "$cur"
+        if [[ $started -eq 0 ]]; then
+            base_words=("${words[@]}")
+            n=${#base_words[@]}
+            started=1
+            continue
+        fi
+        for ((i = 0; i < n && i < ${#words[@]}; i++)); do
+            [[ "$(norm_text "${base_words[i]}")" == "$(norm_text "${words[i]}")" ]] || break
+        done
+        n=$i
+    done
+    local out="${base_words[*]:0:n}"
+    printf '%s' "$out" | sed -E 's/[ ._-]+$//'
+}
+
+# sanitize_folder <nombre>: nombre de carpeta seguro
+sanitize_folder() {
+    printf '%s' "$1" | sed -E 's#/#-#g; s/^[. ]+//; s/[ ]+$//; s/ +/ /g'
+}
+
+# do_group_move <carpeta> <video...>: mueve esos videos, y los subtítulos que
+# llevan su nombre, a la carpeta. Si ya existe una (da igual mayúsculas o
+# minúsculas) la usa sin tocar lo que hay dentro, y no pisa nada.
+do_group_move() {
+    local folder="$1"
+    shift
+    local existing dest name base sub moved=0 skipped=0
+
+    existing="$(find_existing_folder "$folder" "$TARGET_DIR" || true)"
+    [[ -n "$existing" ]] && folder="$existing"
+    dest="$TARGET_DIR/$folder"
+
+    if [[ -e "$dest" && ! -d "$dest" ]]; then
+        echo "      Error: '$folder' existe y no es una carpeta." >&2
+        return 1
+    fi
+    if [[ ! -d "$dest" ]]; then
+        if ! mkdir "$dest"; then
+            echo "      Error: no se pudo crear '$folder'." >&2
+            return 1
+        fi
+    fi
+
+    for name in "$@"; do
+        if [[ -e "$dest/$name" ]]; then
+            echo "      Se omite '$name': ya hay uno igual en $folder/" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+        base="$TARGET_DIR/${name%.*}"
+        if mv -n -- "$TARGET_DIR/$name" "$dest/" && [[ ! -e "$TARGET_DIR/$name" ]]; then
+            moved=$((moved + 1))
+        else
+            echo "      No se pudo mover '$name'." >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+        while IFS= read -r sub; do
+            [[ -n "$sub" ]] || continue
+            [[ -e "$dest/${sub##*/}" ]] || mv -n -- "$sub" "$dest/"
+        done < <(subtitle_companions "$base")
+    done
+
+    echo "      $folder/: $moved videos movidos"
+    [[ $skipped -gt 0 ]] && echo "      $folder/: $skipped omitidos"
+    GROUP_LAST_DIR="$dest"
+    [[ $moved -gt 0 ]]
+}
+
+# group_by_criteria: agrupa los videos que cumplen los criterios de GROUP_CRITERIA
+group_by_criteria() {
+    local -a pos=() neg=()
+    local term t raw
+    IFS=',' read -r -a raw <<< "$GROUP_CRITERIA"
+    for term in "${raw[@]}"; do
+        term="${term#"${term%%[![:space:]]*}"}"
+        term="${term%"${term##*[![:space:]]}"}"
+        [[ -n "$term" ]] || continue
+        if [[ "$term" == -* ]]; then
+            t="$(norm_text "${term#-}")"
+            [[ -n "$t" ]] && neg+=(" $t ")
+        else
+            t="$(norm_text "$term")"
+            [[ -n "$t" ]] && pos+=(" $t ")
+        fi
+    done
+
+    if [[ ${#pos[@]} -eq 0 ]]; then
+        echo "Error: los criterios necesitan al menos una palabra que deba aparecer." >&2
+        echo "Ejemplo: orgie -a \"the big bang\" ." >&2
+        exit 1
+    fi
+
+    local matched=() near=() name nb p ok any n
+    for name in "${GROUP_NAMES[@]}"; do
+        nb=" $(norm_text "${name%.*}") "
+        ok=1
+        any=0
+        for p in "${pos[@]}"; do
+            if [[ "$nb" == *"$p"* ]]; then any=1; else ok=0; fi
+        done
+        for n in "${neg[@]}"; do
+            [[ "$nb" == *"$n"* ]] && ok=0
+        done
+        if [[ $ok -eq 1 ]]; then
+            matched+=("$name")
+        elif [[ $any -eq 1 ]]; then
+            near+=("$name")
+        fi
+    done
+
+    echo "[3/4] Plan (todavía no se ha tocado nada)..."
+    echo ""
+
+    if [[ ${#matched[@]} -eq 0 ]]; then
+        echo "      Ningún video cumple los criterios: $GROUP_CRITERIA"
+        if [[ ${#near[@]} -gt 0 ]]; then
+            echo ""
+            echo "      Tienen alguna de las palabras, pero no cumplen todo:"
+            local shown=0
+            for name in "${near[@]}"; do
+                echo "        $name"
+                shown=$((shown + 1))
+                [[ $shown -ge 8 ]] && break
+            done
+        fi
+        echo ""
+        return 0
+    fi
+
+    local base_names=()
+    for name in "${matched[@]}"; do base_names+=("${name%.*}"); done
+    local proposed
+    proposed="$(sanitize_folder "$(common_title "${base_names[@]}")")"
+
+    local existing=""
+    [[ -n "$proposed" ]] && existing="$(find_existing_folder "$proposed" "$TARGET_DIR" || true)"
+
+    if [[ -z "$proposed" ]]; then
+        echo "      No se pudo deducir un nombre para la carpeta."
+    elif [[ -n "$existing" ]]; then
+        echo "      Carpeta: $existing/  (ya existe, se añade ahí)"
+    else
+        echo "      Carpeta: $proposed/  (nueva)"
+    fi
+    echo "      Videos que cumplen los criterios: ${#matched[@]}"
+    echo ""
+
+    local shown=0
+    for name in "${matched[@]}"; do
+        if [[ ${#matched[@]} -gt 12 && $shown -ge 10 ]]; then
+            echo "        ... y $((${#matched[@]} - shown)) más"
+            break
+        fi
+        echo "        $name"
+        shown=$((shown + 1))
+    done
+    echo ""
+
+    local subs=0 sub
+    for name in "${matched[@]}"; do
+        while IFS= read -r sub; do
+            [[ -n "$sub" ]] && subs=$((subs + 1))
+        done < <(subtitle_companions "$TARGET_DIR/${name%.*}")
+    done
+    [[ $subs -gt 0 ]] && echo "      Además, $subs subtítulos viajan con su video." && echo ""
+
+    if [[ ${#near[@]} -gt 0 ]]; then
+        echo "      No incluidos, pero con alguna de tus palabras (por si te interesan):"
+        shown=0
+        for name in "${near[@]}"; do
+            echo "        $name"
+            shown=$((shown + 1))
+            [[ $shown -ge 5 ]] && break
+        done
+        [[ ${#near[@]} -gt 5 ]] && echo "        ... y $((${#near[@]} - 5)) más"
+        echo ""
+    fi
+
+    local ans folder
+    if [[ -z "$proposed" ]]; then
+        read -r -p "¿Nombre de la carpeta? (vacío para cancelar): " ans
+        folder="$(sanitize_folder "$ans")"
+        if [[ -z "$folder" ]]; then
+            echo ""
+            echo "No se cambió nada."
+            return 0
+        fi
+    else
+        read -r -p "¿Mover? s = sí, n = no, o escribe otro nombre para la carpeta: " ans
+        case "$ans" in
+            s|S) folder="$proposed" ;;
+            n|N|"")
+                echo ""
+                echo "No se cambió nada."
+                return 0 ;;
+            *) folder="$(sanitize_folder "$ans")" ;;
+        esac
+        if [[ -z "$folder" ]]; then
+            echo ""
+            echo "No se cambió nada."
+            return 0
+        fi
+    fi
+    echo ""
+
+    echo "[4/4] Moviendo..."
+    GROUP_LAST_DIR=""
+    if do_group_move "$folder" "${matched[@]}"; then
+        GROUP_RESULT_DIR="$GROUP_LAST_DIR"
+    fi
+    echo ""
+}
+
+# group_auto: propone grupos por las dos primeras palabras del nombre
+group_auto() {
+    local -A grp_files=() grp_count=()
+    local name t nb key words w
+    local ignore=" the a an el la los las un una "
+
+    for name in "${GROUP_NAMES[@]}"; do
+        # Nombres de Telegram y de cámaras: no se agrupan
+        if [[ "${name%.*}" =~ ^video_[0-9]{4}-[0-9]{2}-[0-9]{2}_ || "${name%.*}" =~ ^(VID|IMG|PXL|MOV)_[0-9] ]]; then
+            continue
+        fi
+        t="$(strip_tags "$(clean_base "${name%.*}")")"
+        nb="$(norm_text "$t")"
+        read -r -a words <<< "$nb"
+        # Se ignora el artículo del principio, si queda alguna palabra más
+        if [[ ${#words[@]} -gt 1 && "$ignore" == *" ${words[0]} "* ]]; then
+            words=("${words[@]:1}")
+        fi
+        [[ ${#words[@]} -gt 0 ]] || continue
+        if [[ ${#words[@]} -ge 2 ]]; then
+            key="${words[0]} ${words[1]}"
+        else
+            key="${words[0]}"
+        fi
+        # Un grupo formado solo por números no dice nada
+        [[ "$key" =~ [a-z] ]] || continue
+        grp_files[$key]+="$name"$'\n'
+        grp_count[$key]=$(( ${grp_count[$key]:-0} + 1 ))
+    done
+
+    local keys=() k
+    while IFS= read -r k; do
+        [[ -n "$k" ]] && keys+=("$k")
+    done < <(for k in "${!grp_count[@]}"; do
+                 [[ ${grp_count[$k]} -ge 2 ]] && echo "$k"
+             done | LC_ALL=C sort)
+
+    echo "[3/4] Plan (todavía no se ha tocado nada)..."
+    echo ""
+    echo "      Sin criterios, orgie no hace magia: agrupa los videos cuyo nombre empieza"
+    echo "      por las mismas dos palabras (sin contar the, a, el, la... ni etiquetas de"
+    echo "      temporada). Revisa bien los grupos antes de aplicar."
+    echo ""
+
+    if [[ ${#keys[@]} -eq 0 ]]; then
+        echo "      No encontré grupos de dos o más videos con el mismo comienzo."
+        echo ""
+        echo "      Si quieres ser más específico, pasa criterios con palabras separadas por"
+        echo "      comas (deben aparecer todas), por ejemplo:  orgie -a \"the big,theory\" ."
+        echo ""
+        return 0
+    fi
+
+    local -a g_names=() g_members=()
+    local i=0 members folder grouped=0 m shown
+    for k in "${keys[@]}"; do
+        i=$((i + 1))
+        members="${grp_files[$k]%$'\n'}"
+        local -a arr=()
+        mapfile -t arr <<< "$members"
+        local bases=()
+        for m in "${arr[@]}"; do bases+=("${m%.*}"); done
+        folder="$(sanitize_folder "$(common_title "${bases[@]}")")"
+        [[ -n "$folder" ]] || folder="$k"
+        g_names+=("$folder")
+        g_members+=("$members")
+        grouped=$((grouped + ${#arr[@]}))
+        echo "      [$i] $folder/   (${#arr[@]} videos)"
+        shown=0
+        for m in "${arr[@]}"; do
+            echo "            $m"
+            shown=$((shown + 1))
+            if [[ ${#arr[@]} -gt 4 && $shown -ge 3 ]]; then
+                echo "            ... y $((${#arr[@]} - shown)) más"
+                break
+            fi
+        done
+    done
+    echo ""
+    echo "      Sin grupo (se quedan donde están): $((${#GROUP_NAMES[@]} - grouped)) videos"
+    echo ""
+    echo "      Para ser más específico, pasa criterios: palabras separadas por comas deben"
+    echo "      aparecer todas, lo que va entre comillas aparece junto, y con - delante se"
+    echo "      excluye. Por ejemplo:  orgie -a \"star trek,-discovery\" ."
+    echo ""
+
+    local ans sel=() tok
+    read -r -p "¿Aplicar? s = todos, n = ninguno, o los números de grupo (ejemplo 1,3): " ans
+    echo ""
+    ans="${ans,,}"
+    case "$ans" in
+        s) for ((i = 1; i <= ${#g_names[@]}; i++)); do sel+=("$i"); done ;;
+        n|"")
+            echo "No se cambió nada."
+            return 0 ;;
+        *)
+            for tok in ${ans//,/ }; do
+                if [[ "$tok" =~ ^[0-9]+$ && $tok -ge 1 && $tok -le ${#g_names[@]} ]]; then
+                    sel+=("$tok")
+                else
+                    echo "Error: '$tok' no es un número de grupo válido. No se cambió nada." >&2
+                    return 1
+                fi
+            done ;;
+    esac
+
+    echo "[4/4] Moviendo..."
+    local idx
+    for idx in "${sel[@]}"; do
+        local -a mv_arr=()
+        mapfile -t mv_arr <<< "${g_members[idx-1]}"
+        do_group_move "${g_names[idx-1]}" "${mv_arr[@]}" || true
+    done
+    echo ""
+}
+
+mode_group() {
+    banner "Agrupar por nombre"
+
+    GROUP_RESULT_DIR=""
+
+    echo "[1/4] Comprobando carpeta de trabajo..."
+    resolve_target
+
+    echo "[2/4] Buscando videos..."
+
+    local -A allowed=()
+    local ext_list e f name ext
+    IFS=',' read -r -a ext_list <<< "$EXTS"
+    for e in "${ext_list[@]}"; do
+        e="${e#.}"
+        e="${e,,}"
+        [[ -n "$e" ]] && allowed["$e"]=1
+    done
+
+    local found=()
+    for f in "$TARGET_DIR"/*; do
+        [[ -f "$f" && ! -L "$f" ]] || continue
+        name="${f##*/}"
+        [[ "$name" == *.* ]] || continue
+        [[ "$name" == *$'\n'* ]] && continue
+        ext="${name##*.}"
+        ext="${ext,,}"
+        [[ -n "${allowed[$ext]:-}" ]] || continue
+        found+=("$name")
+    done
+
+    if [[ ${#found[@]} -eq 0 ]]; then
+        echo "      No se encontraron videos (extensiones: $EXTS) en '$TARGET_DIR'."
+        echo ""
+        return 0
+    fi
+
+    mapfile -t GROUP_NAMES < <(printf '%s\n' "${found[@]}" | LC_ALL=C sort -V)
+    echo "      Videos encontrados: ${#GROUP_NAMES[@]}"
+    echo ""
+
+    if [[ -n "$GROUP_CRITERIA" ]]; then
+        group_by_criteria
+    else
+        group_auto
+    fi
+}
+
+# run_after_group: tras agrupar, sigue con -p y/o -s dentro de la carpeta nueva
+run_after_group() {
+    if [[ -z "$GROUP_CRITERIA" ]]; then
+        echo "      Sin criterios no se sigue con -p/-s, porque pueden salir varias carpetas:"
+        echo "      ejecútalos dentro de la carpeta que quieras."
+        return 0
+    fi
+    [[ -n "$GROUP_RESULT_DIR" ]] || return 0
+
+    echo "Ahora se sigue dentro de '$GROUP_RESULT_DIR', con su propia vista previa y confirmación."
+    echo ""
+    TARGET_ARG="$GROUP_RESULT_DIR"
+    case "$AFTER_GROUP" in
+        split)       mode_split ;;
+        series)      mode_series ;;
+        splitseries) mode_splitseries ;;
+    esac
+}
+
+# ============================================================
+#  Cuentas de OpenSubtitles
+# ============================================================
+
+# account_username <archivo>: el usuario guardado en una cuenta
+account_username() {
+    sed -n 's/^username = "\(.*\)"$/\1/p' "$1" | head -n 1
+}
+
+# load_accounts: llena ACCOUNTS con las cuentas guardadas, en orden
+load_accounts() {
+    ACCOUNTS=()
+    [[ -f "$CONF_FILE" ]] && ACCOUNTS+=("$CONF_FILE")
+    local f
+    while IFS= read -r f; do
+        [[ -n "$f" ]] && ACCOUNTS+=("$f")
+    done < <(printf '%s\n' "$CONF_DIR"/opensubtitles-*.toml | LC_ALL=C sort -V)
+}
+
+# next_account_file: archivo donde guardar la siguiente cuenta
+next_account_file() {
+    local n=2
+    if [[ ! -f "$CONF_FILE" ]]; then
+        echo "$CONF_FILE"
+        return
+    fi
+    while [[ -e "$CONF_DIR/opensubtitles-$n.toml" ]]; do
+        n=$((n + 1))
+    done
+    echo "$CONF_DIR/opensubtitles-$n.toml"
+}
+
+# os_label: cómo se llama la etapa de OpenSubtitles en pantalla
+os_label() {
+    if [[ ${#ACCOUNTS[@]} -gt 1 ]]; then
+        echo "OpenSubtitles (cuenta $((ACCT + 1)))"
+    else
+        echo "OpenSubtitles"
+    fi
+}
+
+# reset_cache: vacía la caché de esta ejecución. Guarda el pase de la cuenta
+# anterior y subliminal lo seguiría usando aunque cambies de cuenta.
+reset_cache() {
+    rm -rf "$RUN_CACHE"
+    RUN_CACHE="$(mktemp -d)"
+}
+
+# next_account: pasa a la siguiente cuenta guardada; si no queda ninguna,
+# ofrece añadir otra. Devuelve 0 si hay una cuenta con la que reintentar.
+next_account() {
+    if [[ $((ACCT + 1)) -lt ${#ACCOUNTS[@]} ]]; then
+        ACCT=$((ACCT + 1))
+        SUB_CONF="${ACCOUNTS[ACCT]}"
+        reset_cache
+        echo "      Se pasa a la cuenta $((ACCT + 1))."
+        return 0
+    fi
+
+    if [[ ${#ACCOUNTS[@]} -eq 1 ]]; then
+        echo "      Se agotó el límite de tu cuenta de OpenSubtitles."
+    else
+        echo "      Se agotó el límite en las ${#ACCOUNTS[@]} cuentas guardadas."
+    fi
+
+    local ans new_file
+    read -r -p "      ¿Iniciar sesión con otra cuenta de OpenSubtitles? (s/n): " ans
+    if [[ "$ans" == "s" || "$ans" == "S" ]]; then
+        new_file="$(next_account_file)"
+        if ask_login "$new_file"; then
+            ACCOUNTS+=("$new_file")
+            ACCT=$((${#ACCOUNTS[@]} - 1))
+            reset_cache
+            return 0
+        fi
+    fi
+    echo "      Se sigue con las otras fuentes."
+    return 1
+}
+
+# rejected_account: OpenSubtitles no aceptó la cuenta actual. Si hay otra
+# guardada se pasa a ella; si no, se ofrece escribir los datos de nuevo (una
+# vez por ejecución).
+rejected_account() {
+    if [[ $((ACCT + 1)) -lt ${#ACCOUNTS[@]} ]]; then
+        ACCT=$((ACCT + 1))
+        SUB_CONF="${ACCOUNTS[ACCT]}"
+        reset_cache
+        echo "      Se pasa a la cuenta $((ACCT + 1))."
+        return 0
+    fi
+    [[ $RELOGIN_DONE -eq 1 ]] && return 1
+    RELOGIN_DONE=1
+
+    local ans
+    read -r -p "      ¿Volver a escribir tus datos de OpenSubtitles? (s/n): " ans
+    if [[ "$ans" == "s" || "$ans" == "S" ]] && ask_login "${ACCOUNTS[ACCT]}"; then
+        reset_cache
+        return 0
+    fi
+    return 1
+}
+
+# ============================================================
 #  Lectura de flags y selección de modo
 # ============================================================
 
@@ -1816,6 +3215,16 @@ START_SET=0
 EXT_SET=0
 LANG_SET=0
 BY_NAME=0
+YOUTUBE=0
+DO_GROUP=0
+GROUP_CRITERIA=""
+AFTER_GROUP=""
+GROUP_RESULT_DIR=""
+GROUP_LAST_DIR=""
+ACCOUNTS=()
+ACCT=0
+RELOGIN_DONE=0
+RUN_CACHE=""
 
 set_mode() {
     local new="$1"
@@ -1855,6 +3264,17 @@ while [[ $# -gt 0 ]]; do
         -s|--series)  set_mode series; shift ;;
         -t|--subs)    set_mode subs;   shift ;;
         -d|--dupes)   set_mode dupes;  shift ;;
+        -c|--clean)   set_mode clean;  shift ;;
+        -a|--group)
+            DO_GROUP=1
+            if [[ $# -ge 2 && "$2" != -* && ! -d "$2" ]]; then
+                GROUP_CRITERIA="$2"
+                shift 2
+            else
+                shift
+            fi ;;
+        --group=*)    DO_GROUP=1; GROUP_CRITERIA="${1#--group=}"; shift ;;
+        -o|--sort)    set_mode sort;   shift ;;
         -p|--split)   need_value "$1" $#; SPLIT_LIST="$2"; set_mode split; shift 2 ;;
         --update)     set_mode update;    shift ;;
         --install)    set_mode install;   shift ;;
@@ -1863,11 +3283,27 @@ while [[ $# -gt 0 ]]; do
         -e|--ext)     need_value "$1" $#; EXTS="$2";     EXT_SET=1;   shift 2 ;;
         -l|--lang)    need_value "$1" $#; SUB_LANG="$2"; LANG_SET=1;  shift 2 ;;
         --by-name)    BY_NAME=1; shift ;;
+        --youtube)    YOUTUBE=1; shift ;;
         --)           shift; while [[ $# -gt 0 ]]; do set_target "$1"; shift; done ;;
         -*)           echo "Error: opción desconocida: $1 (usa -h para ver la ayuda)." >&2; exit 1 ;;
         *)            set_target "$1"; shift ;;
     esac
 done
+
+if [[ $DO_GROUP -eq 1 ]]; then
+    case "$MODE" in
+        ""|series|split|splitseries) ;;
+        *)
+            echo "Error: -a solo se combina con -p y -s." >&2
+            exit 1 ;;
+    esac
+    if [[ -z "$MODE" ]]; then
+        MODE="group"
+    else
+        AFTER_GROUP="$MODE"
+        MODE="group"
+    fi
+fi
 
 if [[ -z "$MODE" ]]; then
     echo "Error: falta indicar el modo (por ejemplo -g, -s o -t)." >&2
@@ -1876,8 +3312,14 @@ if [[ -z "$MODE" ]]; then
     exit 1
 fi
 
-if [[ $BY_NAME -eq 1 && "$MODE" != "series" && "$MODE" != "splitseries" ]]; then
+if [[ $BY_NAME -eq 1 && "$MODE" != "series" && "$MODE" != "splitseries" \
+    && "$AFTER_GROUP" != "series" && "$AFTER_GROUP" != "splitseries" ]]; then
     echo "Error: --by-name solo se usa con -s (o con -p y -s juntos)." >&2
+    exit 1
+fi
+
+if [[ $YOUTUBE -eq 1 && "$MODE" != "subs" ]]; then
+    echo "Error: --youtube solo se usa con -t." >&2
     exit 1
 fi
 
@@ -1886,8 +3328,17 @@ bad_opts=0
 case "$MODE" in
     install|uninstall|update)
         [[ $((START_SET + EXT_SET + LANG_SET)) -gt 0 || -n "$TARGET_ARG" ]] && bad_opts=1 ;;
-    games|dupes)
+    games|dupes|sort)
         [[ $((START_SET + EXT_SET + LANG_SET)) -gt 0 ]] && bad_opts=1 ;;
+    group)
+        if [[ -z "$AFTER_GROUP" ]]; then
+            [[ $START_SET -eq 1 || $LANG_SET -eq 1 ]] && bad_opts=1
+        else
+            [[ $LANG_SET -eq 1 ]] && bad_opts=1
+            [[ $START_SET -eq 1 && "$AFTER_GROUP" == "split" ]] && bad_opts=1
+        fi ;;
+    clean)
+        [[ $START_SET -eq 1 || $LANG_SET -eq 1 ]] && bad_opts=1 ;;
     series)
         [[ $LANG_SET -eq 1 ]] && bad_opts=1 ;;
     subs)
@@ -1909,6 +3360,11 @@ case "$MODE" in
     split)     mode_split ;;
     splitseries) mode_splitseries ;;
     dupes)     mode_dupes ;;
+    clean)     mode_clean ;;
+    sort)      mode_sort ;;
+    group)
+        mode_group
+        [[ -n "$AFTER_GROUP" ]] && run_after_group ;;
     update)    mode_update ;;
     install)   mode_install ;;
     uninstall) mode_uninstall ;;
