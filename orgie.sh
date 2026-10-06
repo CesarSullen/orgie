@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-VERSION="0.9.0"
+VERSION="0.10.0"
 OS_RELEASE="/etc/os-release"
 YT_TOLERANCE=3
 INSTALL_DIR="$HOME/.local/bin"
@@ -50,6 +50,8 @@ Modos (hay que elegir uno):
                      falta, orgie ofrece instalarlo.
   -p, --split LISTA  Reparte los videos, en orden de nombre, en carpetas T1, T2...
                      según los capítulos de cada temporada. Ej: -p 24,12,13.
+                     Con -p auto lee la temporada de la etiqueta de cada nombre
+                     (S05E03, 5x03...) y crea T5, T6... con el número real.
                      Los subtítulos viajan con su video. Pide confirmación.
                      Si lo combinas con -s (orgie -p 11,12 -s), los videos se
                      ordenan por fecha de creación, se reparten y se numeran
@@ -81,6 +83,9 @@ Opciones de --series:
   --by-name          Ordena por nombre (orden natural: 2 va antes que 10) en
                      lugar de por fecha de creación. Sirve para carpetas ya
                      numeradas, o cuando la fecha de creación no es fiable.
+  --by-episode       Con -s: lee la etiqueta de cada nombre (S05E03, s5e3, 5x03,
+                     Episodio 3...) y numera con el número real del capítulo
+                     (S05E03 pasa a 03). Avisa de los capítulos que faltan.
 
 Opciones de --subs:
   -l, --lang COD     Idioma (por defecto es). Ejemplos: en, pt-BR.
@@ -105,6 +110,8 @@ Ejemplos:
   orgie -p 24,12,13 ~/Series/MiSerie
   orgie -p 11,12 -s ~/Series/MiSerie
   orgie -s --by-name ~/Series/MiSerie
+  orgie -p auto -s ~/Series/MiSerie
+  orgie -s --by-episode ~/Series/MiSerie/T5
   orgie -d ~/Downloads
   orgie -c ~/Downloads
   orgie -a "the big bang theory" ~/Downloads
@@ -1068,6 +1075,40 @@ youtube_stage() {
     return 0
 }
 
+# search_name_for <ruta del video>: cuando el nombre es solo un número (como los
+# que deja -s), subliminal saca el título de la carpeta y se confunde. Aquí se
+# deduce la serie y la temporada de las carpetas ("Serie/T5/10.mkv") y se
+# devuelve un nombre tipo "Serie S05E10" para buscar. Vacío si el nombre ya
+# tiene texto o si las carpetas no ayudan.
+search_name_for() {
+    local path="$1" file base dir p1 p2 series season ep
+    file="${path##*/}"
+    base="${file%.*}"
+    [[ "$base" =~ ^[0-9]+$ ]] || return 0
+    ep=$((10#$base))
+    dir="${path%/*}"
+    p1="${dir##*/}"
+    p2="${dir%/*}"
+    p2="${p2##*/}"
+
+    shopt -s nocasematch
+    if [[ "$p1" =~ ^(T|S|Season|Temporada)[\ ._-]*([0-9]{1,2})$ ]]; then
+        season=$((10#${BASH_REMATCH[2]}))
+        series="$p2"
+    else
+        season=1
+        series="$p1"
+    fi
+    shopt -u nocasematch
+
+    series="$(printf '%s' "$series" | tr '._' '  ' | sed -E 's/ +/ /g; s/^ //; s/ $//')"
+    [[ "$series" =~ [A-Za-z]{2,} ]] || return 0
+    case "${series,,}" in
+        downloads|descargas|videos|video|peliculas|series|movies|tv|tmp|home|desktop|escritorio) return 0 ;;
+    esac
+    printf '%s S%02dE%02d' "$series" "$season" "$ep"
+}
+
 # Guarda una cuenta de OpenSubtitles en un archivo que solo lee tu usuario.
 # save_login <archivo> <usuario> <contraseña>
 save_login() {
@@ -1177,6 +1218,11 @@ try_stage() {
         bad_sites="${bad_sites% }"
         if [[ -n "$bad_sites" ]]; then
             STAGE_NOTE="no se pudo consultar (${bad_sites// /, })"
+            if [[ "$STAGE_OUT" == *"Bad Request"* && ! "${2##*/}" =~ [A-Za-z] ]]; then
+                STAGE_NOTE="$STAGE_NOTE: el nombre del archivo es solo un número y no sirve para buscar"
+                echo "$STAGE_NOTE"
+                return 1
+            fi
             # Última línea de error que dejó subliminal, para saber el motivo real
             reason="$(printf '%s\n' "$STAGE_OUT" \
                 | grep -E '^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+: ' \
@@ -1346,7 +1392,7 @@ EOF
         trap 'rm -rf "${RUN_CACHE:-}"' EXIT
     fi
 
-    local got=0 skipped=0 notfound=0 i=0 s video found skip_os=0
+    local got=0 skipped=0 notfound=0 i=0 s video found skip_os=0 eff_video link_dir alt_name f
 
     for video in "${videos[@]}"; do
         i=$((i + 1))
@@ -1362,6 +1408,25 @@ EOF
             continue
         fi
 
+        # Si el nombre es solo un número, se busca con un nombre deducido de las
+        # carpetas, mediante un enlace temporal; el subtítulo vuelve junto al video.
+        eff_video="$video"
+        link_dir=""
+        alt_name=""
+        if [[ $YOUTUBE -eq 0 ]]; then
+            alt_name="$(search_name_for "$video")"
+            if [[ -n "$alt_name" ]]; then
+                link_dir="$(mktemp -d)"
+                if ln -s "$video" "$link_dir/$alt_name.${video##*.}"; then
+                    eff_video="$link_dir/$alt_name.${video##*.}"
+                    echo "      Se busca como: $alt_name"
+                else
+                    rm -rf "$link_dir"
+                    link_dir=""
+                fi
+            fi
+        fi
+
         found=0
 
         for ((s = 0; s < ${#stages[@]}; s++)); do
@@ -1371,7 +1436,7 @@ EOF
                 # Con la cuenta actual; si se agota, se prueba la siguiente
                 while :; do
                     printf '      %-24s ' "$(os_label)"
-                    if try_stage "${stages[s]}" "$video"; then
+                    if try_stage "${stages[s]}" "$eff_video"; then
                         echo "$STAGE_NOTE"
                         found=1
                         break
@@ -1394,7 +1459,7 @@ EOF
             fi
 
             printf '      %-24s ' "${labels[s]}"
-            if try_stage "${stages[s]}" "$video"; then
+            if try_stage "${stages[s]}" "$eff_video"; then
                 echo "$STAGE_NOTE"
                 found=1
                 break
@@ -1408,6 +1473,15 @@ EOF
                 found=1
             fi
             echo "$STAGE_NOTE"
+        fi
+
+        # Los subtítulos bajados junto al enlace temporal vuelven junto al video
+        if [[ -n "$link_dir" ]]; then
+            for f in "$link_dir/$alt_name".*.srt; do
+                [[ -f "$f" ]] || continue
+                mv -n -- "$f" "${video%.*}.${f#"$link_dir/$alt_name".}"
+            done
+            rm -rf "$link_dir"
         fi
 
         if [[ $found -eq 1 ]]; then
@@ -3095,6 +3169,7 @@ run_after_group() {
         split)       mode_split ;;
         series)      mode_series ;;
         splitseries) mode_splitseries ;;
+        episodes)    mode_episodes ;;
     esac
 }
 
@@ -3202,6 +3277,368 @@ rejected_account() {
 }
 
 # ============================================================
+#  Modo de episodios por etiqueta (-p auto y --by-episode)
+# ============================================================
+
+# parse_episode <nombre sin extensión>: imprime "temporada episodio" leyendo la
+# etiqueta del nombre. Entiende S05E03, s5e3, S5E03, 5x03, "Season 2 Episode 3"
+# y "Episodio 3" o "Cap 3" (estos dos últimos sin temporada, que sale "none").
+# No imprime nada si no encuentra ninguna etiqueta.
+parse_episode() {
+    local n="$1" s="" e=""
+    shopt -s nocasematch
+    if [[ "$n" =~ S([0-9]{1,2})[\ ._-]?E([0-9]{1,3}) ]]; then
+        s="${BASH_REMATCH[1]}"
+        e="${BASH_REMATCH[2]}"
+    elif [[ "$n" =~ (Temporada|Season)[\ ._-]*([0-9]{1,2})[\ ._-]*(Episodio|Episode|Capitulo|Capítulo|Cap|Ep)[\ ._-]*([0-9]{1,3}) ]]; then
+        s="${BASH_REMATCH[2]}"
+        e="${BASH_REMATCH[4]}"
+    elif [[ "$n" =~ (^|[^0-9A-Za-z])([0-9]{1,2})x([0-9]{1,3})([^0-9A-Za-z]|$) ]]; then
+        s="${BASH_REMATCH[2]}"
+        e="${BASH_REMATCH[3]}"
+    elif [[ "$n" =~ (^|[^A-Za-z])(Episodio|Episode|Capitulo|Capítulo|Cap|Ep)[\ ._-]*([0-9]{1,3}) ]]; then
+        e="${BASH_REMATCH[3]}"
+    fi
+    shopt -u nocasematch
+    [[ -n "$e" ]] || return 0
+    if [[ -n "$s" ]]; then
+        echo "$((10#$s)) $((10#$e))"
+    else
+        echo "none $((10#$e))"
+    fi
+}
+
+mode_episodes() {
+    banner "Temporadas y capítulos por etiqueta"
+
+    echo "[1/4] Comprobando carpeta de trabajo..."
+    resolve_target
+
+    echo "[2/4] Leyendo las etiquetas de episodio..."
+
+    local -A allowed=()
+    local ext_list e f name ext
+    IFS=',' read -r -a ext_list <<< "$EXTS"
+    for e in "${ext_list[@]}"; do
+        e="${e#.}"
+        e="${e,,}"
+        [[ -n "$e" ]] && allowed["$e"]=1
+    done
+
+    local found=()
+    for f in "$TARGET_DIR"/*; do
+        [[ -f "$f" && ! -L "$f" ]] || continue
+        name="${f##*/}"
+        [[ "$name" == *.* ]] || continue
+        [[ "$name" == *$'\n'* || "$name" == *$'\t'* ]] && continue
+        ext="${name##*.}"
+        ext="${ext,,}"
+        [[ -n "${allowed[$ext]:-}" ]] || continue
+        found+=("$name")
+    done
+
+    if [[ ${#found[@]} -eq 0 ]]; then
+        echo "      No se encontraron videos (extensiones: $EXTS) en '$TARGET_DIR'."
+        echo ""
+        return 0
+    fi
+
+    local untagged=() tags=() t any_season=0 any_none=0 s ep
+    for name in "${found[@]}"; do
+        t="$(parse_episode "${name%.*}")"
+        if [[ -z "$t" ]]; then
+            untagged+=("$name")
+            continue
+        fi
+        s="${t%% *}"
+        if [[ "$s" == "none" ]]; then any_none=1; else any_season=1; fi
+        tags+=("$t"$'\t'"$name")
+    done
+
+    echo "      Videos encontrados: ${#found[@]}"
+    echo ""
+
+    if [[ ${#untagged[@]} -gt 0 ]]; then
+        echo "Error: ${#untagged[@]} videos no tienen una etiqueta de episodio que orgie reconozca" >&2
+        echo "(S05E03, s5e3, 5x03, Episodio 3, Cap 3...). No se cambió nada:" >&2
+        local shown=0
+        for name in "${untagged[@]}"; do
+            echo "  $name" >&2
+            shown=$((shown + 1))
+            [[ $shown -ge 15 ]] && { echo "  ... y $((${#untagged[@]} - shown)) más" >&2; break; }
+        done
+        return 1
+    fi
+
+    if [[ $any_season -eq 1 && $any_none -eq 1 ]]; then
+        echo "Error: algunos videos indican la temporada (S05E03) y otros solo el capítulo (Episodio 3)." >&2
+        echo "No se puede saber a qué temporada pertenecen estos últimos. No se cambió nada:" >&2
+        for t in "${tags[@]}"; do
+            [[ "${t%% *}" == "none" ]] && echo "  ${t#*$'\t'}" >&2
+        done
+        return 1
+    fi
+
+    # Si ninguno trae temporada, se toma todo como temporada 1
+    local entries=()
+    for t in "${tags[@]}"; do
+        s="${t%% *}"
+        ep="${t#* }"
+        ep="${ep%%$'\t'*}"
+        name="${t#*$'\t'}"
+        [[ "$s" == "none" ]] && s=1
+        entries+=("$s"$'\t'"$ep"$'\t'"$name")
+    done
+    [[ $any_season -eq 0 ]] && echo "      Ningún video indica la temporada: se toma todo como temporada 1." && echo ""
+
+    local sorted
+    mapfile -t sorted < <(printf '%s\n' "${entries[@]}" | LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3)
+
+    # Dos videos con el mismo capítulo no se pueden resolver solos
+    local -A seen=()
+    local dups=() key prev_name
+    for t in "${sorted[@]}"; do
+        s="${t%%$'\t'*}"
+        ep="${t#*$'\t'}"
+        ep="${ep%%$'\t'*}"
+        name="${t##*$'\t'}"
+        key="$s:$ep"
+        if [[ -n "${seen[$key]:-}" ]]; then
+            dups+=("S$(printf '%02d' "$s")E$(printf '%02d' "$ep"):  ${seen[$key]}  y  $name")
+        else
+            seen[$key]="$name"
+        fi
+    done
+    if [[ ${#dups[@]} -gt 0 ]]; then
+        echo "Error: hay capítulos repetidos, y orgie no decide cuál es el bueno. No se cambió nada:" >&2
+        for t in "${dups[@]}"; do echo "  $t" >&2; done
+        return 1
+    fi
+
+    # Temporadas presentes, con su capítulo más alto
+    local -A season_max=() season_n=() season_min=()
+    local seasons=()
+    for t in "${sorted[@]}"; do
+        s="${t%%$'\t'*}"
+        ep="${t#*$'\t'}"
+        ep="${ep%%$'\t'*}"
+        if [[ -z "${season_n[$s]:-}" ]]; then
+            seasons+=("$s")
+            season_n[$s]=0
+            season_max[$s]=0
+            season_min[$s]=$ep
+        fi
+        season_n[$s]=$((season_n[$s] + 1))
+        [[ $ep -gt ${season_max[$s]} ]] && season_max[$s]=$ep
+    done
+
+    if [[ $EP_MOVE -eq 0 && ${#seasons[@]} -gt 1 ]]; then
+        echo "Error: hay varias temporadas (${seasons[*]}) en la misma carpeta, y renombrarlas sin" >&2
+        echo "separar dejaría capítulos con el mismo número. Usa -p auto para repartirlas en carpetas." >&2
+        return 1
+    fi
+
+    # Plan: origen -> destino (relativo a la carpeta)
+    local V_SRC=() V_DST=() V_TAG=() V_SEASON=()
+    local width newname dir
+    for t in "${sorted[@]}"; do
+        s="${t%%$'\t'*}"
+        ep="${t#*$'\t'}"
+        ep="${ep%%$'\t'*}"
+        name="${t##*$'\t'}"
+        ext="${name##*.}"
+        dir=""
+        [[ $EP_MOVE -eq 1 ]] && dir="T$s/"
+        if [[ $EP_RENAME -eq 1 ]]; then
+            width=${#season_max[$s]}
+            [[ $width -lt 2 ]] && width=2
+            newname="$(printf '%0*d.%s' "$width" "$ep" "$ext")"
+        else
+            newname="$name"
+        fi
+        V_SRC+=("$name")
+        V_DST+=("$dir$newname")
+        V_TAG+=("S$(printf '%02d' "$s")E$(printf '%02d' "$ep")")
+        V_SEASON+=("$s")
+    done
+
+    local total=${#V_SRC[@]} i
+
+    # Subtítulos con el mismo nombre que un video: siguen su mismo camino
+    local S_SRC=() S_DST=() sub rest base newbase dest_dir
+    local -A claimed=() is_video=() in_src=()
+    for name in "${V_SRC[@]}"; do is_video["$name"]=1; in_src["$name"]=1; done
+    for ((i = 0; i < total; i++)); do
+        base="${V_SRC[i]%.*}"
+        dest_dir=""
+        [[ "${V_DST[i]}" == */* ]] && dest_dir="${V_DST[i]%%/*}/"
+        newbase="${V_DST[i]##*/}"
+        newbase="${newbase%.*}"
+        while IFS= read -r sub; do
+            [[ -n "$sub" ]] || continue
+            sub="${sub##*/}"
+            [[ -z "${claimed[$sub]:-}" && -z "${is_video[$sub]:-}" ]] || continue
+            rest="${sub#"$base".}"
+            claimed["$sub"]=1
+            in_src["$sub"]=1
+            S_SRC+=("$sub")
+            if [[ $EP_RENAME -eq 1 ]]; then
+                S_DST+=("$dest_dir$newbase.$rest")
+            else
+                S_DST+=("$dest_dir$sub")
+            fi
+        done < <(subtitle_companions "$TARGET_DIR/$base")
+    done
+
+    # Nada se pisa: lo que ya exista en destino se omite
+    local keep_src=() keep_dst=() keep_tag=() keep_season=() skipped=() dst
+    for ((i = 0; i < total; i++)); do
+        dst="${V_DST[i]}"
+        if [[ "$dst" == "${V_SRC[i]}" ]]; then
+            continue
+        fi
+        if [[ -e "$TARGET_DIR/$dst" && -z "${in_src[$dst]:-}" ]]; then
+            skipped+=("${V_SRC[i]}  (ya existe '$dst')")
+            continue
+        fi
+        keep_src+=("${V_SRC[i]}")
+        keep_dst+=("$dst")
+        keep_tag+=("${V_TAG[i]}")
+        keep_season+=("${V_SEASON[i]}")
+    done
+    local keep_sub_src=() keep_sub_dst=()
+    for ((i = 0; i < ${#S_SRC[@]}; i++)); do
+        dst="${S_DST[i]}"
+        [[ "$dst" == "${S_SRC[i]}" ]] && continue
+        if [[ -e "$TARGET_DIR/$dst" && -z "${in_src[$dst]:-}" ]]; then
+            skipped+=("${S_SRC[i]}  (ya existe '$dst')")
+            continue
+        fi
+        keep_sub_src+=("${S_SRC[i]}")
+        keep_sub_dst+=("$dst")
+    done
+
+    echo "[3/4] Plan (todavía no se ha tocado nada)..."
+    echo ""
+
+    local first last cnt gaps m shown_n
+    for s in "${seasons[@]}"; do
+        cnt=${season_n[$s]}
+        if [[ $EP_MOVE -eq 1 ]]; then
+            echo "      T$s: $cnt videos"
+        else
+            echo "      Temporada $s: $cnt videos"
+        fi
+
+        shown_n=0
+        for ((i = 0; i < ${#keep_src[@]}; i++)); do
+            [[ "${keep_season[i]}" == "$s" ]] || continue
+            shown_n=$((shown_n + 1))
+            if [[ $cnt -gt 6 && $shown_n -gt 3 && $shown_n -le $((cnt - 2)) ]]; then
+                [[ $shown_n -eq 4 ]] && echo "        ..."
+                continue
+            fi
+            printf '        %s  <-  %s   (%s)\n' "${keep_dst[i]}" "${keep_src[i]}" "${keep_tag[i]}"
+        done
+
+        # Capítulos que faltan entre el primero y el último que tienes
+        gaps=""
+        for ((m = ${season_min[$s]}; m <= ${season_max[$s]}; m++)); do
+            [[ -n "${seen[$s:$m]:-}" ]] || gaps="$gaps$m, "
+        done
+        [[ -n "$gaps" ]] && echo "        Faltan los capítulos: ${gaps%, }"
+        [[ ${season_min[$s]} -gt 1 ]] && echo "        La temporada empieza en el capítulo ${season_min[$s]}"
+        echo ""
+    done
+
+    if [[ ${#keep_sub_src[@]} -gt 0 ]]; then
+        echo "      Además, ${#keep_sub_src[@]} subtítulos siguen a su video."
+        echo ""
+    fi
+    if [[ ${#skipped[@]} -gt 0 ]]; then
+        echo "      Se omiten para no pisar nada:"
+        for t in "${skipped[@]}"; do echo "        $t"; done
+        echo ""
+    fi
+
+    if [[ ${#keep_src[@]} -eq 0 ]]; then
+        echo "      No hay nada que cambiar."
+        echo ""
+        return 0
+    fi
+
+    local confirm what="Mover" sub_text=""
+    [[ $EP_MOVE -eq 0 ]] && what="Renombrar"
+    [[ $EP_MOVE -eq 1 && $EP_RENAME -eq 1 ]] && what="Mover y renombrar"
+    [[ ${#keep_sub_src[@]} -gt 0 ]] && sub_text=" y ${#keep_sub_src[@]} subtítulos"
+    read -r -p "¿$what ${#keep_src[@]} videos$sub_text? Esto no se puede deshacer. (s/n): " confirm
+    if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
+        echo ""
+        echo "No se cambió nada."
+        return 0
+    fi
+    echo ""
+
+    echo "[4/4] Aplicando..."
+
+    local status=0
+    if [[ $EP_MOVE -eq 0 ]]; then
+        # Solo renombrar: en dos fases, para que ningún archivo pise a otro
+        SRC=("${keep_src[@]}")
+        DST=("${keep_dst[@]}")
+        if [[ ${#keep_sub_src[@]} -gt 0 ]]; then
+            SRC+=("${keep_sub_src[@]}")
+            DST+=("${keep_sub_dst[@]}")
+        fi
+        if apply_renames; then
+            echo "      Renombrado completado."
+        else
+            echo "      Terminó con errores (ver mensajes arriba)." >&2
+            status=1
+        fi
+    else
+        local made=() j dname
+        local all_src=("${keep_src[@]}") all_dst=("${keep_dst[@]}")
+        if [[ ${#keep_sub_src[@]} -gt 0 ]]; then
+            all_src+=("${keep_sub_src[@]}")
+            all_dst+=("${keep_sub_dst[@]}")
+        fi
+        for dst in "${all_dst[@]}"; do
+            dname="${dst%%/*}"
+            if [[ ! -d "$TARGET_DIR/$dname" ]]; then
+                if ! mkdir "$TARGET_DIR/$dname"; then
+                    echo "Error: no se pudo crear $dname. Se deshace lo hecho." >&2
+                    for j in "${made[@]}"; do rmdir "$TARGET_DIR/$j" 2>/dev/null; done
+                    return 1
+                fi
+                made+=("$dname")
+            fi
+        done
+        for ((i = 0; i < ${#all_src[@]}; i++)); do
+            if mv -n -- "$TARGET_DIR/${all_src[i]}" "$TARGET_DIR/${all_dst[i]}" \
+                && [[ -e "$TARGET_DIR/${all_dst[i]}" && ! -e "$TARGET_DIR/${all_src[i]}" ]]; then
+                :
+            else
+                echo "Error al mover '${all_src[i]}'. Se devuelve todo a como estaba..." >&2
+                for ((j = i - 1; j >= 0; j--)); do
+                    mv -n -- "$TARGET_DIR/${all_dst[j]}" "$TARGET_DIR/${all_src[j]}"
+                done
+                for j in "${made[@]}"; do rmdir "$TARGET_DIR/$j" 2>/dev/null; done
+                return 1
+            fi
+        done
+        echo "      Movimiento completado."
+    fi
+
+    banner "Proceso terminado"
+    echo "  Videos procesados:  ${#keep_src[@]}"
+    [[ ${#keep_sub_src[@]} -gt 0 ]] && echo "  Subtítulos:         ${#keep_sub_src[@]}"
+    echo ""
+
+    return $status
+}
+
+# ============================================================
 #  Lectura de flags y selección de modo
 # ============================================================
 
@@ -3216,6 +3653,10 @@ EXT_SET=0
 LANG_SET=0
 BY_NAME=0
 YOUTUBE=0
+SPLIT_AUTO=0
+BY_EPISODE=0
+EP_MOVE=0
+EP_RENAME=0
 DO_GROUP=0
 GROUP_CRITERIA=""
 AFTER_GROUP=""
@@ -3275,7 +3716,12 @@ while [[ $# -gt 0 ]]; do
             fi ;;
         --group=*)    DO_GROUP=1; GROUP_CRITERIA="${1#--group=}"; shift ;;
         -o|--sort)    set_mode sort;   shift ;;
-        -p|--split)   need_value "$1" $#; SPLIT_LIST="$2"; set_mode split; shift 2 ;;
+        -p|--split)
+            need_value "$1" $#
+            SPLIT_LIST="$2"
+            [[ "${2,,}" == "auto" ]] && SPLIT_AUTO=1
+            set_mode split
+            shift 2 ;;
         --update)     set_mode update;    shift ;;
         --install)    set_mode install;   shift ;;
         --uninstall)  set_mode uninstall; shift ;;
@@ -3283,6 +3729,7 @@ while [[ $# -gt 0 ]]; do
         -e|--ext)     need_value "$1" $#; EXTS="$2";     EXT_SET=1;   shift 2 ;;
         -l|--lang)    need_value "$1" $#; SUB_LANG="$2"; LANG_SET=1;  shift 2 ;;
         --by-name)    BY_NAME=1; shift ;;
+        --by-episode) BY_EPISODE=1; shift ;;
         --youtube)    YOUTUBE=1; shift ;;
         --)           shift; while [[ $# -gt 0 ]]; do set_target "$1"; shift; done ;;
         -*)           echo "Error: opción desconocida: $1 (usa -h para ver la ayuda)." >&2; exit 1 ;;
@@ -3290,9 +3737,32 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ $SPLIT_AUTO -eq 1 || $BY_EPISODE -eq 1 ]]; then
+    if [[ $BY_NAME -eq 1 ]]; then
+        echo "Error: --by-name y la lectura de etiquetas (-p auto, --by-episode) no se combinan." >&2
+        exit 1
+    fi
+    if [[ -n "$SPLIT_LIST" && $SPLIT_AUTO -eq 0 ]]; then
+        echo "Error: --by-episode no se combina con una lista de cantidades; usa -p auto." >&2
+        exit 1
+    fi
+    case "$MODE" in
+        split)       EP_MOVE=1 ;;
+        series)      EP_RENAME=1 ;;
+        splitseries) EP_MOVE=1; EP_RENAME=1 ;;
+        *)
+            echo "Error: --by-episode se usa con -s, y -p auto, solo o con -s." >&2
+            exit 1 ;;
+    esac
+    if [[ $SPLIT_AUTO -eq 0 ]]; then
+        EP_MOVE=0
+    fi
+    MODE="episodes"
+fi
+
 if [[ $DO_GROUP -eq 1 ]]; then
     case "$MODE" in
-        ""|series|split|splitseries) ;;
+        ""|series|split|splitseries|episodes) ;;
         *)
             echo "Error: -a solo se combina con -p y -s." >&2
             exit 1 ;;
@@ -3330,12 +3800,14 @@ case "$MODE" in
         [[ $((START_SET + EXT_SET + LANG_SET)) -gt 0 || -n "$TARGET_ARG" ]] && bad_opts=1 ;;
     games|dupes|sort)
         [[ $((START_SET + EXT_SET + LANG_SET)) -gt 0 ]] && bad_opts=1 ;;
+    episodes)
+        [[ $START_SET -eq 1 || $LANG_SET -eq 1 ]] && bad_opts=1 ;;
     group)
         if [[ -z "$AFTER_GROUP" ]]; then
             [[ $START_SET -eq 1 || $LANG_SET -eq 1 ]] && bad_opts=1
         else
             [[ $LANG_SET -eq 1 ]] && bad_opts=1
-            [[ $START_SET -eq 1 && "$AFTER_GROUP" == "split" ]] && bad_opts=1
+            [[ $START_SET -eq 1 && ( "$AFTER_GROUP" == "split" || "$AFTER_GROUP" == "episodes" ) ]] && bad_opts=1
         fi ;;
     clean)
         [[ $START_SET -eq 1 || $LANG_SET -eq 1 ]] && bad_opts=1 ;;
@@ -3358,6 +3830,7 @@ case "$MODE" in
     series)    mode_series ;;
     subs)      mode_subs ;;
     split)     mode_split ;;
+    episodes)  mode_episodes ;;
     splitseries) mode_splitseries ;;
     dupes)     mode_dupes ;;
     clean)     mode_clean ;;

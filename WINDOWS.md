@@ -130,6 +130,8 @@ Ya en la carpeta de los videos:
 orgie -s .                  # numera los capítulos (01, 02...) según el orden de descarga
 orgie -s -n 36 .            # igual, empezando en 036
 orgie -s --by-name .        # renumera por nombre (si la fecha de creación no sirve)
+orgie -p auto -s .           # reparte en T5, T6... leyendo S05E03, 5x03... y renumera
+orgie -s --by-episode .      # renumera una temporada con el número real de cada capítulo
 orgie -p 24,12,13 .         # reparte en T1, T2 y T3 según los capítulos de cada temporada
 orgie -d .                  # busca archivos duplicados
 orgie -c .                  # limpia la basura de los nombres de los videos

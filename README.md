@@ -6,6 +6,7 @@ Un solo script de Bash para cosas que hago a mano todo el tiempo con descargas: 
 orgie -g carpeta          # juegos de Switch
 orgie -s carpeta          # numerar capítulos
 orgie -p 24,12 carpeta    # repartir en temporadas
+orgie -p auto carpeta     # repartir en temporadas leyendo S05E03, 5x03...
 orgie -t carpeta          # subtítulos
 orgie -d carpeta          # duplicados
 orgie -c carpeta          # limpiar nombres
@@ -76,6 +77,8 @@ orgie -s -n 36 .               # series: empieza en 036
 orgie -p 24,12,13 .            # temporadas: T1 con 24 capítulos, T2 con 12 y T3 con 13 (por nombre)
 orgie -p 11,12 -s .            # temporadas y numeración por fecha de creación
 orgie -p 11,12 -s --by-name .  # lo mismo, pero ordenando por nombre
+orgie -p auto -s .             # temporadas por etiqueta (T5, T6...) y capítulos con su número
+orgie -s --by-episode .        # renumera una temporada con el número real de cada capítulo
 orgie -s --by-name .           # renumera por nombre una carpeta ya numerada
 orgie -d ~/Downloads           # duplicados: busca archivos idénticos en esa carpeta
 orgie -c ~/Downloads           # limpiar: quita basura de los nombres de los videos
@@ -130,6 +133,7 @@ Opciones:
 | `-n N`, `--start N` | Número inicial (por defecto 1). `-n 36` da `036`, `037`... |
 | `-e LISTA`, `--ext LISTA` | Extensiones a procesar, separadas por comas y sin punto |
 | `--by-name` | Ordena por nombre en vez de por fecha de creación (ver abajo) |
+| `--by-episode` | Ordena por la etiqueta de episodio del nombre y usa el número real (ver abajo) |
 
 Por defecto procesa `mp4, mkv, avi, mov, webm, m4v, ts, flv, wmv`. Si dos archivos tienen exactamente la misma fecha, los ordena por nombre y te avisa. Si tu sistema de archivos no guarda la fecha de creación, se detiene sin cambiar nada.
 
@@ -175,6 +179,28 @@ orgie -p 11,12 -s --by-name .
 
 Así, una carpeta ya numerada de corrido (`001` a `023`) se reparte en `T1` y `T2`, cada una desde `01`.
 
+### Leer la temporada y el capítulo del nombre (`-p auto`, `--by-episode`)
+
+Si los nombres traen la etiqueta del episodio, no hace falta contar nada ni fiarse de la fecha de creación:
+
+```bash
+orgie -p auto .            # reparte en T5, T6... según la temporada de cada nombre
+orgie -p auto -s .         # además renombra cada video con el número de su capítulo
+orgie -s --by-episode .    # renumera una carpeta de una sola temporada
+```
+
+orgie reconoce, sin distinguir mayúsculas y en cualquier mezcla: `S05E03`, `s5e3`, `S5E03`, `5x03`, `Season 5 Episode 3` y `Temporada 5 Episodio 3`. También `Episodio 3`, `Episode 3`, `Capitulo 3`, `Cap 3` y `Ep 3`, que no dicen la temporada: si **ningún** video la indica, lo toma todo como temporada 1. Resoluciones y códecs como `1920x1080` o `x264` no se confunden con una etiqueta.
+
+- **Carpetas:** la carpeta de cada temporada usa el número de la etiqueta, así que con las temporadas 5 y 6 salen `T5` y `T6`, no `T1` y `T2`. Si una carpeta `T5` ya existe, la usa sin tocar lo que hay dentro y no pisa ningún archivo que tenga el mismo nombre.
+- **Números:** con `-s`, cada video pasa a llamarse con el **número real del capítulo** de su etiqueta (`S03E05` queda `05.mkv`), con dos cifras o tres si la temporada llega a 100 capítulos. No renumera de forma consecutiva: si falta un capítulo, el hueco se queda.
+- **Capítulos que faltan:** el plan avisa de los huecos entre el primero y el último que tienes (`Faltan los capítulos: 3, 4`) y de si la temporada empieza más tarde del 1. Es solo un aviso, porque orgie no consulta nada en internet.
+- **Subtítulos:** los que tienen el mismo nombre que un video lo siguen y cambian con él.
+- **Si algo no cuadra, no hace nada:** un video sin etiqueta reconocible, dos videos con el mismo capítulo, o una mezcla de nombres con temporada y nombres sin ella, detienen el proceso y te los lista.
+- **`--by-episode` sin `-p auto`** necesita que haya una sola temporada en la carpeta; si hay varias, te pide `-p auto`.
+- **Opciones:** no se combinan con `-n` (los números salen de las etiquetas) ni con `--by-name`. Enseña una vista previa y pide confirmación, y no se puede deshacer.
+
+Con `-a` se encadena igual que lo demás: `orgie -a "the big bang theory" -p auto -s .` agrupa, y después reparte por temporada y renombra, cada paso con su confirmación.
+
 ### Reglas de la lista
 
 La suma de la lista tiene que coincidir con el número de videos de la carpeta; si no, se detiene sin tocar nada (con `-e` puedes limitar las extensiones). Tampoco sigue si ya existe alguna carpeta `T1`, `T2`... que vaya a crear. Enseña la vista previa y pide confirmación antes de mover.
@@ -214,7 +240,7 @@ El plan también enseña los videos que **no** entran pero tienen alguna de tus 
 orgie -a "the big bang theory" -p 12,24 -s .
 ```
 
-Sin criterios no se encadena, porque pueden salir varias carpetas. Esto usa las cantidades de `-p` como siempre; la lectura de etiquetas de episodio no está todavía.
+Sin criterios no se encadena, porque pueden salir varias carpetas. Con `-p auto` y `--by-episode` también funciona, y con ellos las cantidades salen de las etiquetas de los nombres.
 
 ## Limpiar nombres (`-c`)
 
