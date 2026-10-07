@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-VERSION="0.10.0"
+VERSION="0.10.1"
 OS_RELEASE="/etc/os-release"
 YT_TOLERANCE=3
 INSTALL_DIR="$HOME/.local/bin"
@@ -1075,19 +1075,24 @@ youtube_stage() {
     return 0
 }
 
-# search_name_for <ruta del video>: cuando el nombre es solo un número (como los
-# que deja -s), subliminal saca el título de la carpeta y se confunde. Aquí se
-# deduce la serie y la temporada de las carpetas ("Serie/T5/10.mkv") y se
-# devuelve un nombre tipo "Serie S05E10" para buscar. Vacío si el nombre ya
-# tiene texto o si las carpetas no ayudan.
+# search_name_for <ruta del video>: subliminal mira también las carpetas de la
+# ruta y puede tomar su nombre como título de la serie. Casos que se corrigen:
+# - la carpeta directa no tiene letras (una temporada llamada "10"): se busca
+#   con el nombre del archivo, sin que la carpeta influya;
+# - el nombre es solo un número (como los que deja -s): se deduce la serie y la
+#   temporada de las carpetas ("Serie/T5/10.mkv") y se devuelve "Serie S05E10".
+# Vacío si no hace falta o si las carpetas no ayudan.
 search_name_for() {
     local path="$1" file base dir p1 p2 series season ep
     file="${path##*/}"
     base="${file%.*}"
-    [[ "$base" =~ ^[0-9]+$ ]] || return 0
-    ep=$((10#$base))
     dir="${path%/*}"
     p1="${dir##*/}"
+    if [[ ! "$base" =~ ^[0-9]+$ ]]; then
+        [[ "$p1" =~ [A-Za-z] ]] || printf '%s' "$base"
+        return 0
+    fi
+    ep=$((10#$base))
     p2="${dir%/*}"
     p2="${p2##*/}"
 
