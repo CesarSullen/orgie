@@ -17,6 +17,10 @@ orgie --update            # actualizar orgie
 
 Si no pones carpeta usa la actual. Si no pones ninguna flag, muestra la ayuda y no toca nada.
 
+## Demo
+
+[Ver demo: organiza una serie en carpetas y renumera los capítulos](demo.mp4)
+
 ## Instalación
 
 Se instala solo para tu usuario, en `~/.local/bin/orgie`. No usa `sudo` ni toca la configuración de tu terminal.
