@@ -19,7 +19,7 @@ Si no pones carpeta usa la actual. Si no pones ninguna flag, muestra la ayuda y 
 
 ## Demo
 
-[Ver demo: organiza una serie en carpetas y renumera los capítulos](demo.mp4)
+https://github.com/user-attachments/assets/f4949c4c-f9dd-4d3e-ab46-5d779f734de6
 
 ## Instalación
 
