@@ -197,6 +197,7 @@ orgie reconoce, sin distinguir mayúsculas y en cualquier mezcla: `S05E03`, `s5e
 
 - **Carpetas:** la carpeta de cada temporada usa el número de la etiqueta, así que con las temporadas 5 y 6 salen `T5` y `T6`, no `T1` y `T2`. Si una carpeta `T5` ya existe, la usa sin tocar lo que hay dentro y no pisa ningún archivo que tenga el mismo nombre.
 - **Números:** con `-s`, cada video pasa a llamarse con el **número real del capítulo** de su etiqueta (`S03E05` queda `05.mkv`), con dos cifras o tres si la temporada llega a 100 capítulos. No renumera de forma consecutiva: si falta un capítulo, el hueco se queda.
+- **Con la temporada en el nombre (`--season-tag`):** si prefieres que el nombre conserve la temporada, añade `--season-tag` y `S03E05` queda `S03E05.mkv` en lugar de `05.mkv`. Se usa con `-s` y `-p auto` (o con `-s --by-episode`).
 - **Capítulos que faltan:** el plan avisa de los huecos entre el primero y el último que tienes (`Faltan los capítulos: 3, 4`) y de si la temporada empieza más tarde del 1. Es solo un aviso, porque orgie no consulta nada en internet.
 - **Subtítulos:** los que tienen el mismo nombre que un video lo siguen y cambian con él.
 - **Si algo no cuadra, no hace nada:** un video sin etiqueta reconocible, dos videos con el mismo capítulo, o una mezcla de nombres con temporada y nombres sin ella, detienen el proceso y te los lista.

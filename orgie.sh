@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-VERSION="0.10.1"
+VERSION="0.11.0"
 OS_RELEASE="/etc/os-release"
 YT_TOLERANCE=3
 INSTALL_DIR="$HOME/.local/bin"
@@ -86,6 +86,8 @@ Opciones de --series:
   --by-episode       Con -s: lee la etiqueta de cada nombre (S05E03, s5e3, 5x03,
                      Episodio 3...) y numera con el número real del capítulo
                      (S05E03 pasa a 03). Avisa de los capítulos que faltan.
+  --season-tag       Con -s y -p auto (o --by-episode): en vez de solo el número,
+                     deja la temporada en el nombre (S05E03 pasa a S05E03.mkv).
 
 Opciones de --subs:
   -l, --lang COD     Idioma (por defecto es). Ejemplos: en, pt-BR.
@@ -3457,7 +3459,11 @@ mode_episodes() {
         if [[ $EP_RENAME -eq 1 ]]; then
             width=${#season_max[$s]}
             [[ $width -lt 2 ]] && width=2
-            newname="$(printf '%0*d.%s' "$width" "$ep" "$ext")"
+            if [[ $SEASON_TAG -eq 1 ]]; then
+                newname="$(printf 'S%02dE%0*d.%s' "$s" "$width" "$ep" "$ext")"
+            else
+                newname="$(printf '%0*d.%s' "$width" "$ep" "$ext")"
+            fi
         else
             newname="$name"
         fi
@@ -3660,6 +3666,7 @@ BY_NAME=0
 YOUTUBE=0
 SPLIT_AUTO=0
 BY_EPISODE=0
+SEASON_TAG=0
 EP_MOVE=0
 EP_RENAME=0
 DO_GROUP=0
@@ -3735,6 +3742,7 @@ while [[ $# -gt 0 ]]; do
         -l|--lang)    need_value "$1" $#; SUB_LANG="$2"; LANG_SET=1;  shift 2 ;;
         --by-name)    BY_NAME=1; shift ;;
         --by-episode) BY_EPISODE=1; shift ;;
+        --season-tag) SEASON_TAG=1; shift ;;
         --youtube)    YOUTUBE=1; shift ;;
         --)           shift; while [[ $# -gt 0 ]]; do set_target "$1"; shift; done ;;
         -*)           echo "Error: opción desconocida: $1 (usa -h para ver la ayuda)." >&2; exit 1 ;;
@@ -3763,6 +3771,11 @@ if [[ $SPLIT_AUTO -eq 1 || $BY_EPISODE -eq 1 ]]; then
         EP_MOVE=0
     fi
     MODE="episodes"
+fi
+
+if [[ $SEASON_TAG -eq 1 && $EP_RENAME -eq 0 ]]; then
+    echo "Error: --season-tag se usa con -s y -p auto, o con -s --by-episode." >&2
+    exit 1
 fi
 
 if [[ $DO_GROUP -eq 1 ]]; then
